@@ -55,8 +55,30 @@ async def _auto_post_scheduler_loop():
             logger.error(f"Auto Post Scheduler loop error: {e}")
 
 
+_startup_recovery_lock = asyncio.Lock()
+
+
+def run_startup_recovery():
+    """Run startup recovery safely after DB initialization, before scheduler loop starts."""
+    try:
+        result = scheduler_service.recover_interrupted_jobs()
+        logger.info(
+            "Startup recovery completed: recovered=%s exhausted=%s checked_at=%s",
+            result.get("recovered", 0),
+            result.get("exhausted", 0),
+            result.get("checked_at"),
+        )
+        return result
+    except Exception as e:
+        logger.exception("Startup recovery failed; continuing application startup: %s", e)
+        return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    database.init_db()
+    async with _startup_recovery_lock:
+        run_startup_recovery()
     task_ig = asyncio.create_task(_instagram_background_sync_loop())
     task_yt = asyncio.create_task(_youtube_background_sync_loop())
     task_autopost = asyncio.create_task(_auto_post_scheduler_loop())

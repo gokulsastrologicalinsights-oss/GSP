@@ -77,6 +77,26 @@ function updateUI() {
   if (ytAutoReplyToggle) ytAutoReplyToggle.checked = state.ytAutoReplyEnabled;
   if (safeModeToggle) safeModeToggle.checked = state.safeTestMode;
 
+  const safeModeBanner = document.getElementById('scheduler-safe-mode-banner');
+  const safeModeBannerText = document.getElementById('scheduler-safe-mode-banner-text');
+  if (safeModeBanner && safeModeBannerText) {
+    if (state.safeTestMode) {
+      safeModeBanner.classList.add('safe-mode-enabled');
+      safeModeBanner.classList.remove('safe-mode-disabled');
+      safeModeBanner.style.borderColor = 'rgba(245, 158, 11, 0.45)';
+      safeModeBanner.style.background = 'rgba(245, 158, 11, 0.12)';
+      safeModeBanner.style.color = '#fbbf24';
+      safeModeBannerText.textContent = 'SAFE TESTING MODE – LIVE PUBLISHING DISABLED';
+    } else {
+      safeModeBanner.classList.remove('safe-mode-enabled');
+      safeModeBanner.classList.add('safe-mode-disabled');
+      safeModeBanner.style.borderColor = 'rgba(239, 68, 68, 0.55)';
+      safeModeBanner.style.background = 'rgba(239, 68, 68, 0.14)';
+      safeModeBanner.style.color = '#f87171';
+      safeModeBannerText.textContent = 'LIVE PUBLISHING ENABLED – POSTS WILL BE SENT TO CONNECTED PLATFORMS';
+    }
+  }
+
   if (badge) {
     badge.textContent = state.autoReplyEnabled ? 'ACTIVE' : 'OFF';
     badge.className = `badge ${state.autoReplyEnabled ? 'on' : 'off'}`;
@@ -2519,13 +2539,53 @@ document.addEventListener('DOMContentLoaded', () => {
     const res = await fetch("/api/auto-post/posts");
     const data = await res.json();
     const grid = document.getElementById("scheduled-posts-grid");
-    if (!data.posts || data.posts.length === 0) {
-      grid.innerHTML = `<p style="opacity:0.7;">No scheduled posts yet.</p>`;
+    const allPosts = data.posts || [];
+
+    const counts = {
+      scheduled: 0,
+      published: 0,
+      failed: 0,
+      retry_waiting: 0,
+      auth_required: 0,
+    };
+    allPosts.forEach((p) => {
+      if (p.status === "scheduled") counts.scheduled += 1;
+      else if (p.status === "published" || p.status === "published_safe_mode") counts.published += 1;
+      else if (p.status === "failed") counts.failed += 1;
+      else if (p.status === "retry_waiting") counts.retry_waiting += 1;
+      else if (p.status === "auth_required") counts.auth_required += 1;
+    });
+    const setCount = (id, val) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = String(val);
+    };
+    setCount("summary-count-scheduled", counts.scheduled);
+    setCount("summary-count-published", counts.published);
+    setCount("summary-count-failed", counts.failed);
+    setCount("summary-count-retry-waiting", counts.retry_waiting);
+    setCount("summary-count-auth-required", counts.auth_required);
+
+    const platformFilter = document.getElementById("scheduler-platform-filter")?.value || "";
+    const statusFilter = document.getElementById("scheduler-status-filter")?.value || "";
+    const filteredPosts = allPosts.filter((p) => {
+      if (platformFilter && p.platform !== platformFilter) return false;
+      if (statusFilter) {
+        if (statusFilter === "published") {
+          if (p.status !== "published" && p.status !== "published_safe_mode") return false;
+        } else if (p.status !== statusFilter) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    if (filteredPosts.length === 0) {
+      grid.innerHTML = `<p style="opacity:0.7;">No scheduled posts match the selected filters.</p>`;
       return;
     }
 
     const groups = new Map();
-    data.posts.forEach((p) => {
+    filteredPosts.forEach((p) => {
       const key = p.video_id || `post_${p.id}`;
       if (!groups.has(key)) {
         groups.set(key, {
@@ -2653,4 +2713,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const refreshPostsBtn = document.getElementById("refresh-scheduled-posts-btn");
   if (refreshPostsBtn) refreshPostsBtn.addEventListener("click", loadScheduledPosts);
+  const platformFilterEl = document.getElementById("scheduler-platform-filter");
+  if (platformFilterEl) platformFilterEl.addEventListener("change", loadScheduledPosts);
+  const statusFilterEl = document.getElementById("scheduler-status-filter");
+  if (statusFilterEl) statusFilterEl.addEventListener("change", loadScheduledPosts);
 })();
