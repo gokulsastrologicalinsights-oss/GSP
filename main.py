@@ -170,7 +170,7 @@ def get_status():
     c.execute("SELECT COUNT(*) as count FROM activities WHERE status = 'replied'")
     total_replied = c.fetchone()["count"]
     
-    c.execute("SELECT COUNT(*) as count FROM activities WHERE status = 'review_required'")
+    c.execute("SELECT COUNT(*) as count FROM approval_queue WHERE status = 'pending'")
     pending_review = c.fetchone()["count"]
     
     conn.close()
