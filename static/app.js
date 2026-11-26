@@ -2719,45 +2719,78 @@ document.addEventListener('DOMContentLoaded', () => {
   const statusFilterEl = document.getElementById("scheduler-status-filter");
   if (statusFilterEl) statusFilterEl.addEventListener("change", loadScheduledPosts);
 
-  async function checkAccountHealth(platform = null) {
-    const url = platform ? `/api/accounts/health?platform=${encodeURIComponent(platform)}` : '/api/accounts/health';
-    try {
-      const res = await fetch(url);
-      if (!res.ok) return;
-      const data = await res.json();
-      const accounts = data.accounts || {};
-      const prefixMap = { facebook: 'fb', instagram: 'ig', youtube: 'yt' };
-      Object.entries(accounts).forEach(([plat, info]) => {
-        const p = prefixMap[plat];
-        if (!p || !info) return;
-        const setEl = (id, val) => {
-          const el = document.getElementById(id);
-          if (el) el.textContent = val;
-        };
-        setEl(`${p}-health-conn`, info.account_connection || 'Unknown');
-        setEl(`${p}-health-auth`, info.authorization || 'Unknown');
-        setEl(`${p}-health-ready`, info.publishing_readiness || 'Not Verified');
-        setEl(`${p}-health-checked`, info.last_checked ? info.last_checked.replace('T', ' ') : '—');
-        if (plat === 'youtube') {
-          const refBtn = document.getElementById('yt-btn-refresh-auth');
-          if (refBtn) refBtn.classList.toggle('hidden', !info.can_refresh);
-        }
-      });
-    } catch (err) {
-      console.error('Account health check failed:', err);
-    }
-  }
-
   document.getElementById('btn-check-all-connections')?.addEventListener('click', () => checkAccountHealth());
   document.getElementById('fb-btn-check-health')?.addEventListener('click', () => checkAccountHealth('facebook'));
   document.getElementById('ig-btn-check-health')?.addEventListener('click', () => checkAccountHealth('instagram'));
   document.getElementById('yt-btn-check-health')?.addEventListener('click', () => checkAccountHealth('youtube'));
   document.getElementById('yt-btn-refresh-auth')?.addEventListener('click', async () => {
+    const btn = document.getElementById('yt-btn-refresh-auth');
+    if (btn) btn.disabled = true;
     try {
       const res = await fetch('/api/accounts/health/refresh?platform=youtube', { method: 'POST' });
-      if (res.ok) await checkAccountHealth('youtube');
+      if (res.ok) {
+        await checkAccountHealth('youtube');
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        const detailEl = document.getElementById('yt-health-detail');
+        if (detailEl) detailEl.textContent = errData.detail || `Refresh failed (HTTP ${res.status})`;
+      }
     } catch (err) {
       console.error('YouTube authorization refresh failed:', err);
+      const detailEl = document.getElementById('yt-health-detail');
+      if (detailEl) detailEl.textContent = 'YouTube authorization refresh failed.';
+    } finally {
+      if (btn) btn.disabled = false;
     }
   });
 })();
+
+async function checkAccountHealth(platform = null) {
+  const prefixMap = { facebook: 'fb', instagram: 'ig', youtube: 'yt' };
+  const targets = platform && prefixMap[platform] ? [platform] : ['facebook', 'instagram', 'youtube'];
+  const setEl = (id, val) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = val;
+  };
+
+  targets.forEach((plat) => {
+    const p = prefixMap[plat];
+    setEl(`${p}-health-ready`, 'Checking...');
+    setEl(`${p}-health-detail`, '');
+  });
+
+  const url = platform ? `/api/accounts/health?platform=${encodeURIComponent(platform)}` : '/api/accounts/health';
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      targets.forEach((plat) => {
+        const p = prefixMap[plat];
+        setEl(`${p}-health-ready`, 'Not Verified');
+        setEl(`${p}-health-detail`, `Health check failed (HTTP ${res.status}).`);
+      });
+      return;
+    }
+    const data = await res.json();
+    const accounts = data.accounts || {};
+    Object.entries(accounts).forEach(([plat, info]) => {
+      const p = prefixMap[plat];
+      if (!p || !info) return;
+      setEl(`${p}-health-conn`, info.account_connection || 'Unknown');
+      setEl(`${p}-health-auth`, info.authorization || 'Unknown');
+      setEl(`${p}-health-ready`, info.publishing_readiness || 'Not Verified');
+      setEl(`${p}-health-checked`, info.last_checked ? info.last_checked.replace('T', ' ') : '—');
+      setEl(`${p}-health-detail`, info.detail || '');
+      if (plat === 'youtube') {
+        const refBtn = document.getElementById('yt-btn-refresh-auth');
+        if (refBtn) refBtn.classList.toggle('hidden', !info.can_refresh);
+      }
+    });
+  } catch (err) {
+    console.error('Account health check failed:', err);
+    targets.forEach((plat) => {
+      const p = prefixMap[plat];
+      setEl(`${p}-health-ready`, 'Not Verified');
+      setEl(`${p}-health-detail`, 'Health check request failed.');
+    });
+  }
+}
