@@ -6,13 +6,14 @@ import asyncio
 import logging
 import urllib.parse
 from contextlib import asynccontextmanager
-from typing import Optional
-from fastapi import FastAPI, HTTPException, Request
+from typing import List, Optional
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 
 import database
+import scheduler_service
 from facebook_service import FacebookService
 from instagram_service import InstagramService
 from youtube_service import YouTubeService
@@ -44,15 +45,27 @@ async def _youtube_background_sync_loop():
             logger.error(f"Background YouTube sync error: {e}")
 
 
+async def _auto_post_scheduler_loop():
+    """Periodically checks and executes due scheduled posts."""
+    while True:
+        await asyncio.sleep(30)
+        try:
+            scheduler_service.run_pending_scheduled_posts()
+        except Exception as e:
+            logger.error(f"Auto Post Scheduler loop error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     task_ig = asyncio.create_task(_instagram_background_sync_loop())
     task_yt = asyncio.create_task(_youtube_background_sync_loop())
+    task_autopost = asyncio.create_task(_auto_post_scheduler_loop())
     try:
         yield
     finally:
         task_ig.cancel()
         task_yt.cancel()
+        task_autopost.cancel()
 
 
 app = FastAPI(title="Gokul Social Publisher", version="1.0.0", lifespan=lifespan)
@@ -1167,6 +1180,212 @@ def get_lead_history_endpoint(lead_id: int, business_type: Optional[str] = None)
     if history is None:
         raise HTTPException(status_code=404, detail="Lead not found")
     return {"lead_id": lead_id, "history": history}
+
+
+# ==========================================
+# Auto Post Scheduler V2 (Phase 3.0A)
+# ==========================================
+
+MEDIA_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "media_storage", "auto_post")
+
+
+class PostingSlotItem(BaseModel):
+    day_of_week: int = -1
+    slot_time: str
+
+
+class PostingSlotsUpdateRequest(BaseModel):
+    account_key: str
+    slots: List[PostingSlotItem]
+
+
+class BatchScheduleItem(BaseModel):
+    original_filename: str
+    media_path: str
+    file_size_bytes: int = 0
+    duration_seconds: Optional[float] = None
+    zodiac_index: int
+    caption: Optional[str] = None
+    hashtags: Optional[str] = None
+    thumbnail_path: Optional[str] = None
+
+
+class ChannelSelection(BaseModel):
+    account_key: str
+    platform: str
+
+
+class ScheduleMultiChannelRequest(BaseModel):
+    accounts: List[ChannelSelection]
+    category: str
+    batch_id: Optional[str] = None
+    items: List[BatchScheduleItem]
+
+
+class ScheduleBatchRequest(BaseModel):
+    account_key: str
+    platform: str
+    category: str
+    batch_id: Optional[str] = None
+    items: List[BatchScheduleItem]
+
+
+class ReschedulePostRequest(BaseModel):
+    scheduled_at: str
+
+
+@app.post("/api/auto-post/upload-batch")
+async def upload_auto_post_batch(
+    files: List[UploadFile] = File(...),
+    category: str = "Weekly Rasi Palan",
+):
+    if category not in scheduler_service.BATCH_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"Unsupported category: {category}")
+    batch_id = str(uuid.uuid4())[:8]
+    batch_dir = os.path.join(MEDIA_STORAGE_DIR, batch_id)
+    os.makedirs(batch_dir, exist_ok=True)
+
+    items = []
+    for f in files:
+        safe_name = os.path.basename(f.filename or f"video_{len(items)+1}.mp4")
+        dest_path = os.path.join(batch_dir, safe_name)
+        content = await f.read()
+        with open(dest_path, "wb") as out_f:
+            out_f.write(content)
+
+        detected = scheduler_service.detect_zodiac_from_filename(safe_name)
+        z_idx = detected["index"] if detected else None
+        gen = (
+            scheduler_service.generate_caption_and_hashtags(z_idx, category)
+            if z_idx
+            else {"caption": "", "hashtags": ""}
+        )
+        items.append(
+            {
+                "original_filename": safe_name,
+                "media_path": dest_path,
+                "media_url": f"/api/auto-post/media/{batch_id}/{urllib.parse.quote(safe_name)}",
+                "file_size_bytes": len(content),
+                "zodiac_index": z_idx,
+                "zodiac_tamil": detected["tamil"] if detected else None,
+                "zodiac_english": detected["english"] if detected else None,
+                "caption": gen["caption"],
+                "hashtags": gen["hashtags"],
+            }
+        )
+
+    analysis = scheduler_service.analyze_batch_items(items)
+    analysis["batch_id"] = batch_id
+    analysis["category"] = category
+    return analysis
+
+
+@app.get("/api/auto-post/media/{batch_id}/{filename}")
+def serve_auto_post_media(batch_id: str, filename: str):
+    safe_batch = os.path.basename(batch_id)
+    safe_file = os.path.basename(filename)
+    file_path = os.path.join(MEDIA_STORAGE_DIR, safe_batch, safe_file)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Media file not found")
+    return FileResponse(file_path)
+
+
+@app.get("/api/auto-post/slots")
+def list_posting_slots(account_key: Optional[str] = None):
+    return {"slots": scheduler_service.get_posting_slots(account_key=account_key)}
+
+
+@app.post("/api/auto-post/slots")
+def save_posting_slots_endpoint(req: PostingSlotsUpdateRequest):
+    slots = scheduler_service.save_posting_slots(
+        req.account_key, [s.model_dump() for s in req.slots]
+    )
+    return {"account_key": req.account_key, "slots": slots}
+
+
+@app.delete("/api/auto-post/slots/{slot_id}")
+def delete_posting_slot_endpoint(slot_id: int):
+    deleted = scheduler_service.delete_posting_slot(slot_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Posting slot not found")
+    return {"deleted": True, "slot_id": slot_id}
+
+
+@app.post("/api/auto-post/schedule-multichannel")
+def schedule_multichannel_endpoint(req: ScheduleMultiChannelRequest):
+    try:
+        result = scheduler_service.schedule_multichannel_batch(
+            accounts=[a.model_dump() for a in req.accounts],
+            category=req.category,
+            items=[i.model_dump() for i in req.items],
+            batch_id=req.batch_id,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.put("/api/auto-post/videos/{video_id}/reschedule")
+def reschedule_video_endpoint(video_id: str, req: ReschedulePostRequest):
+    updated, err = scheduler_service.reschedule_video(video_id, req.scheduled_at)
+    if err:
+        code = 404 if "not found" in err.lower() else 409
+        raise HTTPException(status_code=code, detail=err)
+    return {"posts": updated}
+
+
+@app.post("/api/auto-post/schedule-batch")
+def schedule_batch_endpoint(req: ScheduleBatchRequest):
+    try:
+        result = scheduler_service.schedule_batch(
+            account_key=req.account_key,
+            platform=req.platform,
+            category=req.category,
+            items=[i.model_dump() for i in req.items],
+            batch_id=req.batch_id,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.get("/api/auto-post/posts")
+def list_scheduled_posts_endpoint(
+    account_key: Optional[str] = None,
+    status: Optional[str] = None,
+):
+    return {"posts": scheduler_service.get_scheduled_posts(account_key=account_key, status=status)}
+
+
+@app.put("/api/auto-post/posts/{post_id}/reschedule")
+def reschedule_post_endpoint(post_id: int, req: ReschedulePostRequest):
+    updated, err = scheduler_service.reschedule_post(post_id, req.scheduled_at)
+    if err:
+        code = 404 if "not found" in err.lower() else 409
+        raise HTTPException(status_code=code, detail=err)
+    return {"post": updated}
+
+
+@app.post("/api/auto-post/posts/{post_id}/retry")
+def retry_scheduled_post_endpoint(post_id: int):
+    updated, err = scheduler_service.retry_scheduled_post(post_id)
+    if err:
+        code = 404 if "not found" in err.lower() else 400
+        raise HTTPException(status_code=code, detail=err)
+    return {"post": updated}
+
+
+@app.post("/api/auto-post/posts/{post_id}/cancel")
+def cancel_scheduled_post_endpoint(post_id: int):
+    updated, err = scheduler_service.cancel_scheduled_post(post_id)
+    if err:
+        code = 404 if "not found" in err.lower() else 400
+        raise HTTPException(status_code=code, detail=err)
+    return {"post": updated}
 
 
 # Serve frontend

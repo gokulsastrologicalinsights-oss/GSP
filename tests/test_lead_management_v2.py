@@ -158,6 +158,18 @@ def test_invalid_input_handling():
     assert client.post("/api/leads", json=_sample_lead(business_type="InvalidBiz")).status_code == 400
     assert client.post("/api/leads", json=_sample_lead(platform="tiktok")).status_code == 400
     assert client.post("/api/leads", json=_sample_lead(enquiry_category="UnknownCat")).status_code == 400
+
+
+def test_followup_summary_counts():
+    l1 = client.post("/api/leads", json=_sample_lead(source_comment_id="fu_1")).json()
+    client.put(f"/api/leads/{l1['id']}", json={"next_follow_up_at": "2020-01-01T10:00:00"})
+
+    l2 = client.post("/api/leads", json=_sample_lead(source_comment_id="fu_2")).json()
+    client.put(f"/api/leads/{l2['id']}", json={"next_follow_up_at": "2099-01-01T10:00:00"})
+
+    summary = client.get("/api/leads/summary").json()
+    assert summary["pending_follow_ups"] == 2
+    assert summary["overdue_follow_ups"] == 1
     assert client.post("/api/leads", json=_sample_lead(lead_status="Closed")).status_code == 400
     assert client.post("/api/leads", json=_sample_lead(priority="Urgent")).status_code == 400
     assert client.post("/api/leads", json=_sample_lead(original_message="   ")).status_code == 400

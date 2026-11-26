@@ -36,6 +36,10 @@
           <span class="icon">🎯</span>
           <span>Lead Management</span>
         </button>
+        <button class="nav-item" data-tab="autopost">
+          <span class="icon">📅</span>
+          <span>Auto Post Scheduler</span>
+        </button>
       </nav>
 
       <div class="sidebar-status">
@@ -495,6 +499,127 @@
           </div>
         </div>
       </section>
+    <!-- Auto Post Scheduler Section -->
+    <section id="tab-autopost" class="view-section">
+      <div class="section-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+        <div>
+          <h2>Auto Post Scheduler</h2>
+          <p class="subtitle">Import 12 zodiac videos, pick a category, and schedule all with one click.</p>
+        </div>
+        <div class="autopost-subnav" style="display:flex;gap:8px;">
+          <button class="btn btn-primary autopost-sub-btn" data-subtab="upload">1. Bulk Upload</button>
+          <button class="btn btn-secondary autopost-sub-btn" data-subtab="schedule">2. Posting Schedule</button>
+          <button class="btn btn-secondary autopost-sub-btn" data-subtab="posts">3. Scheduled Posts</button>
+        </div>
+      </div>
+
+      <!-- Subsection 1: Bulk Upload -->
+      <div id="autopost-sub-upload" class="autopost-subsection">
+        <div class="card" style="padding:20px;margin-bottom:16px;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:16px;">
+            <div>
+              <label style="display:block;font-weight:600;margin-bottom:6px;">Publishing Channels</label>
+              <div id="autopost-channels-list" style="display:flex;flex-wrap:wrap;gap:10px;padding:8px;border:1px solid rgba(255,255,255,0.12);border-radius:8px;">
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                  <input type="checkbox" class="autopost-channel-checkbox" value="facebook:default|facebook" checked />
+                  <span>Facebook Page</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                  <input type="checkbox" class="autopost-channel-checkbox" value="instagram:default|instagram" checked />
+                  <span>Instagram Professional</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+                  <input type="checkbox" class="autopost-channel-checkbox" value="youtube:default|youtube" checked />
+                  <span>YouTube Channel</span>
+                </label>
+              </div>
+            </div>
+            <div>
+              <label style="display:block;font-weight:600;margin-bottom:6px;">Batch Content Category</label>
+              <select id="autopost-category-select" class="form-control" style="width:100%;padding:8px;">
+                <option value="Weekly Rasi Palan">Weekly Rasi Palan</option>
+                <option value="Monthly Rasi Palan">Monthly Rasi Palan</option>
+                <option value="Zodiac Characteristics">Zodiac Characteristics</option>
+                <option value="General Astrology">General Astrology</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="autopost-dropzone" style="border:2px dashed #6366f1;border-radius:10px;padding:28px;text-align:center;cursor:pointer;background:rgba(99,102,241,0.05);">
+            <p style="font-size:1.05rem;font-weight:600;margin:0 0 6px;">Drag &amp; Drop 12 Zodiac Videos Here</p>
+            <p style="font-size:0.9rem;opacity:0.75;margin:0 0 12px;">Supports Tamil &amp; English filenames (e.g. மேஷம்.mp4, Mesham.mp4, Aries.mp4)</p>
+            <input type="file" id="autopost-file-input" multiple accept="video/*" style="display:none;" />
+            <button type="button" id="autopost-browse-btn" class="btn btn-secondary">Select 12 Videos</button>
+          </div>
+        </div>
+
+        <div id="autopost-batch-warnings" style="display:none;margin-bottom:16px;" class="card"></div>
+
+        <div id="autopost-batch-preview" class="card" style="display:none;padding:20px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:12px;">
+            <h3 style="margin:0;">Detected Zodiac Batch (<span id="autopost-batch-count">0</span>/12)</h3>
+            <button type="button" id="autopost-schedule-all-btn" class="btn btn-primary" style="font-size:1rem;padding:10px 20px;font-weight:700;">
+              SCHEDULE ALL
+            </button>
+          </div>
+          <div id="autopost-batch-list" style="display:grid;gap:10px;"></div>
+        </div>
+
+        <div id="autopost-schedule-summary" class="card" style="display:none;padding:20px;margin-top:16px;border-left:4px solid #10b981;"></div>
+      </div>
+
+      <!-- Subsection 2: Posting Schedule -->
+      <div id="autopost-sub-schedule" class="autopost-subsection" style="display:none;">
+        <div class="card" style="padding:20px;">
+          <h3 style="margin-top:0;">Predefined Posting Slots</h3>
+          <p style="opacity:0.8;margin-bottom:16px;">Configure your preferred posting days and times per account. Videos are assigned in order.</p>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin-bottom:16px;">
+            <div>
+              <label style="display:block;font-weight:600;margin-bottom:4px;">Account</label>
+              <select id="slot-account-select" class="form-control" style="padding:8px;">
+                <option value="facebook:default">Facebook Page (Default)</option>
+                <option value="instagram:default">Instagram Professional (Default)</option>
+                <option value="youtube:default">YouTube Channel (Default)</option>
+              </select>
+            </div>
+            <div>
+              <label style="display:block;font-weight:600;margin-bottom:4px;">Day</label>
+              <select id="slot-day-select" class="form-control" style="padding:8px;">
+                <option value="-1">Every Day</option>
+                <option value="0">Monday</option>
+                <option value="1">Tuesday</option>
+                <option value="2">Wednesday</option>
+                <option value="3">Thursday</option>
+                <option value="4">Friday</option>
+                <option value="5">Saturday</option>
+                <option value="6">Sunday</option>
+              </select>
+            </div>
+            <div>
+              <label style="display:block;font-weight:600;margin-bottom:4px;">Time</label>
+              <input type="time" id="slot-time-input" value="09:00" class="form-control" style="padding:7px;" />
+            </div>
+            <button type="button" id="add-slot-btn" class="btn btn-primary">Add Slot</button>
+          </div>
+          <div id="posting-slots-list" style="display:grid;gap:8px;"></div>
+        </div>
+      </div>
+
+      <!-- Subsection 3: Scheduled Posts -->
+      <div id="autopost-sub-posts" class="autopost-subsection" style="display:none;">
+        <div class="card" style="padding:20px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
+            <div>
+              <h3 style="margin:0;">Scheduled Posts</h3>
+              <p style="margin:4px 0 0;opacity:0.75;font-size:0.9rem;">Drag and drop a post card onto another post card to swap/reschedule its time slot.</p>
+            </div>
+            <button type="button" id="refresh-scheduled-posts-btn" class="btn btn-secondary">Refresh</button>
+          </div>
+          <div id="scheduled-posts-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;"></div>
+        </div>
+      </div>
+    </section>
+
     </main>
   </div>
 

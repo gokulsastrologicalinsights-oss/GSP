@@ -16,5 +16,6 @@ def clean_test_db():
     c.execute("DELETE FROM activities")
     c.execute("DELETE FROM accounts")
     c.execute("DELETE FROM oauth_sessions")
+    c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('safe_test_mode', 'true')")
     conn.commit()
     conn.close()

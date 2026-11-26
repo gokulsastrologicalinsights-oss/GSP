@@ -250,6 +250,68 @@ def init_db():
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_lead_history_lead_id ON lead_activity_history (lead_id, created_at DESC)")
 
+    # Auto Post Scheduler V2 tables
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS posting_slots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_key TEXT NOT NULL,
+        day_of_week INTEGER NOT NULL DEFAULT -1,
+        slot_time TEXT NOT NULL,
+        slot_order INTEGER NOT NULL DEFAULT 0,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_posting_slots_account ON posting_slots (account_key, is_active, slot_order)")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS scheduled_posts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id TEXT,
+        video_id TEXT,
+        account_key TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        zodiac_index INTEGER NOT NULL,
+        zodiac_tamil TEXT NOT NULL,
+        zodiac_english TEXT NOT NULL,
+        category TEXT NOT NULL,
+        original_filename TEXT NOT NULL,
+        media_path TEXT NOT NULL,
+        thumbnail_path TEXT,
+        caption TEXT NOT NULL,
+        hashtags TEXT NOT NULL,
+        scheduled_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'scheduled',
+        external_post_id TEXT,
+        permalink TEXT,
+        error_message TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        published_at TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    for col_def in [
+        "ALTER TABLE scheduled_posts ADD COLUMN video_id TEXT",
+        "ALTER TABLE scheduled_posts ADD COLUMN external_post_id TEXT",
+        "ALTER TABLE scheduled_posts ADD COLUMN permalink TEXT",
+        "ALTER TABLE scheduled_posts ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE scheduled_posts ADD COLUMN upload_session_url TEXT",
+        "ALTER TABLE scheduled_posts ADD COLUMN upload_progress_pct REAL NOT NULL DEFAULT 0",
+        "ALTER TABLE scheduled_posts ADD COLUMN bytes_uploaded INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE scheduled_posts ADD COLUMN total_file_size INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE scheduled_posts ADD COLUMN last_attempt_at TEXT",
+        "ALTER TABLE scheduled_posts ADD COLUMN next_retry_at TEXT",
+        "ALTER TABLE scheduled_posts ADD COLUMN error_category TEXT",
+    ]:
+        try:
+            cursor.execute(col_def)
+        except Exception:
+            pass
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_posts_status_time ON scheduled_posts (status, scheduled_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_posts_account_time ON scheduled_posts (account_key, scheduled_at, status)")
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduled_posts_video_account ON scheduled_posts (video_id, account_key) WHERE video_id IS NOT NULL")
+
     from nlp_detector import APPROVED_TEMPLATES
     for lang, items in APPROVED_TEMPLATES.items():
         for item in items:
@@ -1807,11 +1869,26 @@ def get_leads_summary(business_type: Optional[str] = None) -> Dict[str, Any]:
         c.execute(f"SELECT platform, COUNT(*) AS cnt FROM leads {where_sql} GROUP BY platform", params)
         by_platform = {r["platform"]: r["cnt"] for r in c.fetchall()}
 
+        fu_where = f"{where_sql} AND" if where_sql else "WHERE"
+        c.execute(
+            f"SELECT COUNT(*) AS cnt FROM leads {fu_where} next_follow_up_at IS NOT NULL AND lead_status NOT IN ('Converted', 'Lost')",
+            params,
+        )
+        pending_follow_ups = c.fetchone()["cnt"]
+
+        c.execute(
+            f"SELECT COUNT(*) AS cnt FROM leads {fu_where} next_follow_up_at IS NOT NULL AND next_follow_up_at < strftime('%Y-%m-%dT%H:%M:%S', 'now') AND lead_status NOT IN ('Converted', 'Lost')",
+            params,
+        )
+        overdue_follow_ups = c.fetchone()["cnt"]
+
         return {
             "total": total,
             "by_business": by_business,
             "by_status": by_status,
             "by_platform": by_platform,
+            "pending_follow_ups": pending_follow_ups,
+            "overdue_follow_ups": overdue_follow_ups,
         }
     finally:
         conn.close()

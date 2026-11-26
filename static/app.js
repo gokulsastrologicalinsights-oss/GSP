@@ -1604,19 +1604,23 @@ function aqUpdateSafeModePill() {
 
 function switchAutoReplySubtab(subtab) {
   aqState.subtab = subtab;
-  document.querySelectorAll('.subtab-btn').forEach(btn => {
+  document.querySelectorAll('.subtab-btn[data-subtab]').forEach(btn => {
     const active = btn.dataset.subtab === subtab;
     btn.classList.toggle('active', active);
     btn.setAttribute('aria-selected', active ? 'true' : 'false');
   });
   const autoView = document.getElementById('subview-automatic');
   const approvalView = document.getElementById('subview-approval');
+  const platformSettingsView = document.getElementById('subview-platform-settings');
   if (autoView) autoView.classList.toggle('hidden', subtab !== 'automatic');
   if (approvalView) approvalView.classList.toggle('hidden', subtab !== 'approval');
+  if (platformSettingsView) platformSettingsView.classList.toggle('hidden', subtab !== 'platform-settings');
 
   if (subtab === 'approval') {
     aqUpdateSafeModePill();
     loadApprovalQueue();
+  } else if (subtab === 'platform-settings') {
+    loadPlatformSettings();
   }
 }
 
@@ -2007,130 +2011,6 @@ async function prepareTestReply(queueId) {
   }
 }
 
-// Priority 2E: Platform-specific Hybrid Controls
-const psState = {
-  activePlatform: 'facebook',
-  platforms: {},
-};
-
-const PS_TEMPLATE_LABELS = [
-  { id: 'ta_1', label: 'Tamil 1 (ta_1)' },
-  { id: 'ta_2', label: 'Tamil 2 (ta_2)' },
-  { id: 'en_1', label: 'English 1 (en_1)' },
-  { id: 'en_2', label: 'English 2 (en_2)' },
-  { id: 'tanglish_1', label: 'Tanglish 1 (tanglish_1)' },
-  { id: 'tanglish_2', label: 'Tanglish 2 (tanglish_2)' },
-];
-
-function selectPlatformSettingsTab(platform) {
-  psState.activePlatform = platform;
-  document.querySelectorAll('[data-ps-platform]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.psPlatform === platform);
-  });
-  renderPlatformSettingsPanel();
-}
-
-async function loadPlatformSettings() {
-  try {
-    const res = await fetch('/api/platform-settings');
-    if (!res.ok) throw new Error('Failed to load platform settings');
-    const data = await res.json();
-    psState.platforms = data.platforms || {};
-    renderPlatformSettingsPanel();
-  } catch (err) {
-    const body = document.getElementById('ps-panel-body');
-    if (body) body.textContent = err.message || 'Could not load platform settings.';
-  }
-}
-
-function renderPlatformSettingsPanel() {
-  const body = document.getElementById('ps-panel-body');
-  if (!body) return;
-  const p = psState.activePlatform;
-  const cfg = psState.platforms[p];
-  if (!cfg) {
-    body.textContent = 'Loading...';
-    return;
-  }
-  const enabledSet = new Set(cfg.enabled_templates || []);
-  const disabledBanner = !cfg.auto_reply_enabled
-    ? `<div class="aq-reason" style="margin-bottom:12px;"><strong>Platform Disabled:</strong> Automatic replies are currently turned OFF for ${aqEscapeHtml(p)}.</div>`
-    : '';
-
-  body.innerHTML = `
-    <div style="margin-bottom:12px;">
-      <strong>Connection Status:</strong>
-      <span class="aq-status-badge ${cfg.connected ? 'approved' : 'rejected'}">${cfg.connected ? 'Connected' : 'Not Connected'}</span>
-    </div>
-    ${disabledBanner}
-    <div class="settings-list">
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Enable ${aqEscapeHtml(p)} Auto Reply</span>
-        <input type="checkbox" id="ps-auto-reply" ${cfg.auto_reply_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Automatic Praise Replies</span>
-        <input type="checkbox" id="ps-praise" ${cfg.praise_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Emoji Appreciation Replies</span>
-        <input type="checkbox" id="ps-emoji" ${cfg.emoji_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Manual Approval Queue</span>
-        <input type="checkbox" id="ps-manual-queue" ${cfg.manual_queue_enabled ? 'checked' : ''} />
-      </label>
-    </div>
-    <div style="margin-top:14px;">
-      <strong>Approved Reply Templates</strong>
-      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px;">
-        ${PS_TEMPLATE_LABELS.map(t => `
-          <label style="display:flex;align-items:center;gap:6px;">
-            <input type="checkbox" class="ps-tpl-cb" value="${t.id}" ${enabledSet.has(t.id) ? 'checked' : ''} />
-            <span>${t.label}</span>
-          </label>
-        `).join('')}
-      </div>
-    </div>
-    <div style="margin-top:16px;">
-      <button type="button" class="primary-btn" onclick="savePlatformSettings('${p}')">Save ${aqEscapeHtml(p)} Settings</button>
-    </div>
-  `;
-}
-
-async function savePlatformSettings(platform) {
-  const feedback = document.getElementById('ps-feedback');
-  const payload = {
-    auto_reply_enabled: !!document.getElementById('ps-auto-reply')?.checked,
-    praise_enabled: !!document.getElementById('ps-praise')?.checked,
-    emoji_enabled: !!document.getElementById('ps-emoji')?.checked,
-    manual_queue_enabled: !!document.getElementById('ps-manual-queue')?.checked,
-    enabled_templates: Array.from(document.querySelectorAll('.ps-tpl-cb:checked')).map(el => el.value),
-  };
-  try {
-    const res = await fetch(`/api/platform-settings/${platform}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error('Failed to save settings');
-    const data = await res.json();
-    psState.platforms[platform] = { ...psState.platforms[platform], ...data.settings };
-    renderPlatformSettingsPanel();
-    if (feedback) {
-      feedback.textContent = `Saved ${platform} settings.`;
-      feedback.className = 'aq-feedback success';
-      feedback.classList.remove('hidden');
-    }
-  } catch (err) {
-    if (feedback) {
-      feedback.textContent = err.message || 'Error saving settings.';
-      feedback.className = 'aq-feedback error';
-      feedback.classList.remove('hidden');
-    }
-  }
-}
-
 async function approveQueueItem(queueId) {
   if (aqState.processingIds.has(queueId)) return;
   aqState.processingIds.add(queueId);
@@ -2165,130 +2045,6 @@ async function approveQueueItem(queueId) {
   }
 }
 
-// Priority 2E: Platform-specific Hybrid Controls
-const psState = {
-  activePlatform: 'facebook',
-  platforms: {},
-};
-
-const PS_TEMPLATE_LABELS = [
-  { id: 'ta_1', label: 'Tamil 1 (ta_1)' },
-  { id: 'ta_2', label: 'Tamil 2 (ta_2)' },
-  { id: 'en_1', label: 'English 1 (en_1)' },
-  { id: 'en_2', label: 'English 2 (en_2)' },
-  { id: 'tanglish_1', label: 'Tanglish 1 (tanglish_1)' },
-  { id: 'tanglish_2', label: 'Tanglish 2 (tanglish_2)' },
-];
-
-function selectPlatformSettingsTab(platform) {
-  psState.activePlatform = platform;
-  document.querySelectorAll('[data-ps-platform]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.psPlatform === platform);
-  });
-  renderPlatformSettingsPanel();
-}
-
-async function loadPlatformSettings() {
-  try {
-    const res = await fetch('/api/platform-settings');
-    if (!res.ok) throw new Error('Failed to load platform settings');
-    const data = await res.json();
-    psState.platforms = data.platforms || {};
-    renderPlatformSettingsPanel();
-  } catch (err) {
-    const body = document.getElementById('ps-panel-body');
-    if (body) body.textContent = err.message || 'Could not load platform settings.';
-  }
-}
-
-function renderPlatformSettingsPanel() {
-  const body = document.getElementById('ps-panel-body');
-  if (!body) return;
-  const p = psState.activePlatform;
-  const cfg = psState.platforms[p];
-  if (!cfg) {
-    body.textContent = 'Loading...';
-    return;
-  }
-  const enabledSet = new Set(cfg.enabled_templates || []);
-  const disabledBanner = !cfg.auto_reply_enabled
-    ? `<div class="aq-reason" style="margin-bottom:12px;"><strong>Platform Disabled:</strong> Automatic replies are currently turned OFF for ${aqEscapeHtml(p)}.</div>`
-    : '';
-
-  body.innerHTML = `
-    <div style="margin-bottom:12px;">
-      <strong>Connection Status:</strong>
-      <span class="aq-status-badge ${cfg.connected ? 'approved' : 'rejected'}">${cfg.connected ? 'Connected' : 'Not Connected'}</span>
-    </div>
-    ${disabledBanner}
-    <div class="settings-list">
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Enable ${aqEscapeHtml(p)} Auto Reply</span>
-        <input type="checkbox" id="ps-auto-reply" ${cfg.auto_reply_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Automatic Praise Replies</span>
-        <input type="checkbox" id="ps-praise" ${cfg.praise_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Emoji Appreciation Replies</span>
-        <input type="checkbox" id="ps-emoji" ${cfg.emoji_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Manual Approval Queue</span>
-        <input type="checkbox" id="ps-manual-queue" ${cfg.manual_queue_enabled ? 'checked' : ''} />
-      </label>
-    </div>
-    <div style="margin-top:14px;">
-      <strong>Approved Reply Templates</strong>
-      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px;">
-        ${PS_TEMPLATE_LABELS.map(t => `
-          <label style="display:flex;align-items:center;gap:6px;">
-            <input type="checkbox" class="ps-tpl-cb" value="${t.id}" ${enabledSet.has(t.id) ? 'checked' : ''} />
-            <span>${t.label}</span>
-          </label>
-        `).join('')}
-      </div>
-    </div>
-    <div style="margin-top:16px;">
-      <button type="button" class="primary-btn" onclick="savePlatformSettings('${p}')">Save ${aqEscapeHtml(p)} Settings</button>
-    </div>
-  `;
-}
-
-async function savePlatformSettings(platform) {
-  const feedback = document.getElementById('ps-feedback');
-  const payload = {
-    auto_reply_enabled: !!document.getElementById('ps-auto-reply')?.checked,
-    praise_enabled: !!document.getElementById('ps-praise')?.checked,
-    emoji_enabled: !!document.getElementById('ps-emoji')?.checked,
-    manual_queue_enabled: !!document.getElementById('ps-manual-queue')?.checked,
-    enabled_templates: Array.from(document.querySelectorAll('.ps-tpl-cb:checked')).map(el => el.value),
-  };
-  try {
-    const res = await fetch(`/api/platform-settings/${platform}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error('Failed to save settings');
-    const data = await res.json();
-    psState.platforms[platform] = { ...psState.platforms[platform], ...data.settings };
-    renderPlatformSettingsPanel();
-    if (feedback) {
-      feedback.textContent = `Saved ${platform} settings.`;
-      feedback.className = 'aq-feedback success';
-      feedback.classList.remove('hidden');
-    }
-  } catch (err) {
-    if (feedback) {
-      feedback.textContent = err.message || 'Error saving settings.';
-      feedback.className = 'aq-feedback error';
-      feedback.classList.remove('hidden');
-    }
-  }
-}
-
 async function prepareTestReply(queueId) {
   aqState.processingIds.add(queueId);
   renderApprovalQueue();
@@ -2309,130 +2065,6 @@ async function prepareTestReply(queueId) {
   } finally {
     aqState.processingIds.delete(queueId);
     renderApprovalQueue();
-  }
-}
-
-// Priority 2E: Platform-specific Hybrid Controls
-const psState = {
-  activePlatform: 'facebook',
-  platforms: {},
-};
-
-const PS_TEMPLATE_LABELS = [
-  { id: 'ta_1', label: 'Tamil 1 (ta_1)' },
-  { id: 'ta_2', label: 'Tamil 2 (ta_2)' },
-  { id: 'en_1', label: 'English 1 (en_1)' },
-  { id: 'en_2', label: 'English 2 (en_2)' },
-  { id: 'tanglish_1', label: 'Tanglish 1 (tanglish_1)' },
-  { id: 'tanglish_2', label: 'Tanglish 2 (tanglish_2)' },
-];
-
-function selectPlatformSettingsTab(platform) {
-  psState.activePlatform = platform;
-  document.querySelectorAll('[data-ps-platform]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.psPlatform === platform);
-  });
-  renderPlatformSettingsPanel();
-}
-
-async function loadPlatformSettings() {
-  try {
-    const res = await fetch('/api/platform-settings');
-    if (!res.ok) throw new Error('Failed to load platform settings');
-    const data = await res.json();
-    psState.platforms = data.platforms || {};
-    renderPlatformSettingsPanel();
-  } catch (err) {
-    const body = document.getElementById('ps-panel-body');
-    if (body) body.textContent = err.message || 'Could not load platform settings.';
-  }
-}
-
-function renderPlatformSettingsPanel() {
-  const body = document.getElementById('ps-panel-body');
-  if (!body) return;
-  const p = psState.activePlatform;
-  const cfg = psState.platforms[p];
-  if (!cfg) {
-    body.textContent = 'Loading...';
-    return;
-  }
-  const enabledSet = new Set(cfg.enabled_templates || []);
-  const disabledBanner = !cfg.auto_reply_enabled
-    ? `<div class="aq-reason" style="margin-bottom:12px;"><strong>Platform Disabled:</strong> Automatic replies are currently turned OFF for ${aqEscapeHtml(p)}.</div>`
-    : '';
-
-  body.innerHTML = `
-    <div style="margin-bottom:12px;">
-      <strong>Connection Status:</strong>
-      <span class="aq-status-badge ${cfg.connected ? 'approved' : 'rejected'}">${cfg.connected ? 'Connected' : 'Not Connected'}</span>
-    </div>
-    ${disabledBanner}
-    <div class="settings-list">
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Enable ${aqEscapeHtml(p)} Auto Reply</span>
-        <input type="checkbox" id="ps-auto-reply" ${cfg.auto_reply_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Automatic Praise Replies</span>
-        <input type="checkbox" id="ps-praise" ${cfg.praise_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Emoji Appreciation Replies</span>
-        <input type="checkbox" id="ps-emoji" ${cfg.emoji_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Manual Approval Queue</span>
-        <input type="checkbox" id="ps-manual-queue" ${cfg.manual_queue_enabled ? 'checked' : ''} />
-      </label>
-    </div>
-    <div style="margin-top:14px;">
-      <strong>Approved Reply Templates</strong>
-      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px;">
-        ${PS_TEMPLATE_LABELS.map(t => `
-          <label style="display:flex;align-items:center;gap:6px;">
-            <input type="checkbox" class="ps-tpl-cb" value="${t.id}" ${enabledSet.has(t.id) ? 'checked' : ''} />
-            <span>${t.label}</span>
-          </label>
-        `).join('')}
-      </div>
-    </div>
-    <div style="margin-top:16px;">
-      <button type="button" class="primary-btn" onclick="savePlatformSettings('${p}')">Save ${aqEscapeHtml(p)} Settings</button>
-    </div>
-  `;
-}
-
-async function savePlatformSettings(platform) {
-  const feedback = document.getElementById('ps-feedback');
-  const payload = {
-    auto_reply_enabled: !!document.getElementById('ps-auto-reply')?.checked,
-    praise_enabled: !!document.getElementById('ps-praise')?.checked,
-    emoji_enabled: !!document.getElementById('ps-emoji')?.checked,
-    manual_queue_enabled: !!document.getElementById('ps-manual-queue')?.checked,
-    enabled_templates: Array.from(document.querySelectorAll('.ps-tpl-cb:checked')).map(el => el.value),
-  };
-  try {
-    const res = await fetch(`/api/platform-settings/${platform}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error('Failed to save settings');
-    const data = await res.json();
-    psState.platforms[platform] = { ...psState.platforms[platform], ...data.settings };
-    renderPlatformSettingsPanel();
-    if (feedback) {
-      feedback.textContent = `Saved ${platform} settings.`;
-      feedback.className = 'aq-feedback success';
-      feedback.classList.remove('hidden');
-    }
-  } catch (err) {
-    if (feedback) {
-      feedback.textContent = err.message || 'Error saving settings.';
-      feedback.className = 'aq-feedback error';
-      feedback.classList.remove('hidden');
-    }
   }
 }
 
@@ -2479,130 +2111,6 @@ async function confirmRejectQueueItem(queueId) {
   }
 }
 
-// Priority 2E: Platform-specific Hybrid Controls
-const psState = {
-  activePlatform: 'facebook',
-  platforms: {},
-};
-
-const PS_TEMPLATE_LABELS = [
-  { id: 'ta_1', label: 'Tamil 1 (ta_1)' },
-  { id: 'ta_2', label: 'Tamil 2 (ta_2)' },
-  { id: 'en_1', label: 'English 1 (en_1)' },
-  { id: 'en_2', label: 'English 2 (en_2)' },
-  { id: 'tanglish_1', label: 'Tanglish 1 (tanglish_1)' },
-  { id: 'tanglish_2', label: 'Tanglish 2 (tanglish_2)' },
-];
-
-function selectPlatformSettingsTab(platform) {
-  psState.activePlatform = platform;
-  document.querySelectorAll('[data-ps-platform]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.psPlatform === platform);
-  });
-  renderPlatformSettingsPanel();
-}
-
-async function loadPlatformSettings() {
-  try {
-    const res = await fetch('/api/platform-settings');
-    if (!res.ok) throw new Error('Failed to load platform settings');
-    const data = await res.json();
-    psState.platforms = data.platforms || {};
-    renderPlatformSettingsPanel();
-  } catch (err) {
-    const body = document.getElementById('ps-panel-body');
-    if (body) body.textContent = err.message || 'Could not load platform settings.';
-  }
-}
-
-function renderPlatformSettingsPanel() {
-  const body = document.getElementById('ps-panel-body');
-  if (!body) return;
-  const p = psState.activePlatform;
-  const cfg = psState.platforms[p];
-  if (!cfg) {
-    body.textContent = 'Loading...';
-    return;
-  }
-  const enabledSet = new Set(cfg.enabled_templates || []);
-  const disabledBanner = !cfg.auto_reply_enabled
-    ? `<div class="aq-reason" style="margin-bottom:12px;"><strong>Platform Disabled:</strong> Automatic replies are currently turned OFF for ${aqEscapeHtml(p)}.</div>`
-    : '';
-
-  body.innerHTML = `
-    <div style="margin-bottom:12px;">
-      <strong>Connection Status:</strong>
-      <span class="aq-status-badge ${cfg.connected ? 'approved' : 'rejected'}">${cfg.connected ? 'Connected' : 'Not Connected'}</span>
-    </div>
-    ${disabledBanner}
-    <div class="settings-list">
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Enable ${aqEscapeHtml(p)} Auto Reply</span>
-        <input type="checkbox" id="ps-auto-reply" ${cfg.auto_reply_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Automatic Praise Replies</span>
-        <input type="checkbox" id="ps-praise" ${cfg.praise_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Emoji Appreciation Replies</span>
-        <input type="checkbox" id="ps-emoji" ${cfg.emoji_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Manual Approval Queue</span>
-        <input type="checkbox" id="ps-manual-queue" ${cfg.manual_queue_enabled ? 'checked' : ''} />
-      </label>
-    </div>
-    <div style="margin-top:14px;">
-      <strong>Approved Reply Templates</strong>
-      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px;">
-        ${PS_TEMPLATE_LABELS.map(t => `
-          <label style="display:flex;align-items:center;gap:6px;">
-            <input type="checkbox" class="ps-tpl-cb" value="${t.id}" ${enabledSet.has(t.id) ? 'checked' : ''} />
-            <span>${t.label}</span>
-          </label>
-        `).join('')}
-      </div>
-    </div>
-    <div style="margin-top:16px;">
-      <button type="button" class="primary-btn" onclick="savePlatformSettings('${p}')">Save ${aqEscapeHtml(p)} Settings</button>
-    </div>
-  `;
-}
-
-async function savePlatformSettings(platform) {
-  const feedback = document.getElementById('ps-feedback');
-  const payload = {
-    auto_reply_enabled: !!document.getElementById('ps-auto-reply')?.checked,
-    praise_enabled: !!document.getElementById('ps-praise')?.checked,
-    emoji_enabled: !!document.getElementById('ps-emoji')?.checked,
-    manual_queue_enabled: !!document.getElementById('ps-manual-queue')?.checked,
-    enabled_templates: Array.from(document.querySelectorAll('.ps-tpl-cb:checked')).map(el => el.value),
-  };
-  try {
-    const res = await fetch(`/api/platform-settings/${platform}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error('Failed to save settings');
-    const data = await res.json();
-    psState.platforms[platform] = { ...psState.platforms[platform], ...data.settings };
-    renderPlatformSettingsPanel();
-    if (feedback) {
-      feedback.textContent = `Saved ${platform} settings.`;
-      feedback.className = 'aq-feedback success';
-      feedback.classList.remove('hidden');
-    }
-  } catch (err) {
-    if (feedback) {
-      feedback.textContent = err.message || 'Error saving settings.';
-      feedback.className = 'aq-feedback error';
-      feedback.classList.remove('hidden');
-    }
-  }
-}
-
 async function prepareTestReply(queueId) {
   aqState.processingIds.add(queueId);
   renderApprovalQueue();
@@ -2626,132 +2134,8 @@ async function prepareTestReply(queueId) {
   }
 }
 
-// Priority 2E: Platform-specific Hybrid Controls
-const psState = {
-  activePlatform: 'facebook',
-  platforms: {},
-};
-
-const PS_TEMPLATE_LABELS = [
-  { id: 'ta_1', label: 'Tamil 1 (ta_1)' },
-  { id: 'ta_2', label: 'Tamil 2 (ta_2)' },
-  { id: 'en_1', label: 'English 1 (en_1)' },
-  { id: 'en_2', label: 'English 2 (en_2)' },
-  { id: 'tanglish_1', label: 'Tanglish 1 (tanglish_1)' },
-  { id: 'tanglish_2', label: 'Tanglish 2 (tanglish_2)' },
-];
-
-function selectPlatformSettingsTab(platform) {
-  psState.activePlatform = platform;
-  document.querySelectorAll('[data-ps-platform]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.psPlatform === platform);
-  });
-  renderPlatformSettingsPanel();
-}
-
-async function loadPlatformSettings() {
-  try {
-    const res = await fetch('/api/platform-settings');
-    if (!res.ok) throw new Error('Failed to load platform settings');
-    const data = await res.json();
-    psState.platforms = data.platforms || {};
-    renderPlatformSettingsPanel();
-  } catch (err) {
-    const body = document.getElementById('ps-panel-body');
-    if (body) body.textContent = err.message || 'Could not load platform settings.';
-  }
-}
-
-function renderPlatformSettingsPanel() {
-  const body = document.getElementById('ps-panel-body');
-  if (!body) return;
-  const p = psState.activePlatform;
-  const cfg = psState.platforms[p];
-  if (!cfg) {
-    body.textContent = 'Loading...';
-    return;
-  }
-  const enabledSet = new Set(cfg.enabled_templates || []);
-  const disabledBanner = !cfg.auto_reply_enabled
-    ? `<div class="aq-reason" style="margin-bottom:12px;"><strong>Platform Disabled:</strong> Automatic replies are currently turned OFF for ${aqEscapeHtml(p)}.</div>`
-    : '';
-
-  body.innerHTML = `
-    <div style="margin-bottom:12px;">
-      <strong>Connection Status:</strong>
-      <span class="aq-status-badge ${cfg.connected ? 'approved' : 'rejected'}">${cfg.connected ? 'Connected' : 'Not Connected'}</span>
-    </div>
-    ${disabledBanner}
-    <div class="settings-list">
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Enable ${aqEscapeHtml(p)} Auto Reply</span>
-        <input type="checkbox" id="ps-auto-reply" ${cfg.auto_reply_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Automatic Praise Replies</span>
-        <input type="checkbox" id="ps-praise" ${cfg.praise_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Emoji Appreciation Replies</span>
-        <input type="checkbox" id="ps-emoji" ${cfg.emoji_enabled ? 'checked' : ''} />
-      </label>
-      <label class="setting-item" style="display:flex;justify-content:space-between;align-items:center;">
-        <span>Manual Approval Queue</span>
-        <input type="checkbox" id="ps-manual-queue" ${cfg.manual_queue_enabled ? 'checked' : ''} />
-      </label>
-    </div>
-    <div style="margin-top:14px;">
-      <strong>Approved Reply Templates</strong>
-      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px;">
-        ${PS_TEMPLATE_LABELS.map(t => `
-          <label style="display:flex;align-items:center;gap:6px;">
-            <input type="checkbox" class="ps-tpl-cb" value="${t.id}" ${enabledSet.has(t.id) ? 'checked' : ''} />
-            <span>${t.label}</span>
-          </label>
-        `).join('')}
-      </div>
-    </div>
-    <div style="margin-top:16px;">
-      <button type="button" class="primary-btn" onclick="savePlatformSettings('${p}')">Save ${aqEscapeHtml(p)} Settings</button>
-    </div>
-  `;
-}
-
-async function savePlatformSettings(platform) {
-  const feedback = document.getElementById('ps-feedback');
-  const payload = {
-    auto_reply_enabled: !!document.getElementById('ps-auto-reply')?.checked,
-    praise_enabled: !!document.getElementById('ps-praise')?.checked,
-    emoji_enabled: !!document.getElementById('ps-emoji')?.checked,
-    manual_queue_enabled: !!document.getElementById('ps-manual-queue')?.checked,
-    enabled_templates: Array.from(document.querySelectorAll('.ps-tpl-cb:checked')).map(el => el.value),
-  };
-  try {
-    const res = await fetch(`/api/platform-settings/${platform}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) throw new Error('Failed to save settings');
-    const data = await res.json();
-    psState.platforms[platform] = { ...psState.platforms[platform], ...data.settings };
-    renderPlatformSettingsPanel();
-    if (feedback) {
-      feedback.textContent = `Saved ${platform} settings.`;
-      feedback.className = 'aq-feedback success';
-      feedback.classList.remove('hidden');
-    }
-  } catch (err) {
-    if (feedback) {
-      feedback.textContent = err.message || 'Error saving settings.';
-      feedback.className = 'aq-feedback error';
-      feedback.classList.remove('hidden');
-    }
-  }
-}
-
 function initApprovalQueue() {
-  document.querySelectorAll('.subtab-btn').forEach(btn => {
+  document.querySelectorAll('.subtab-btn[data-subtab]').forEach(btn => {
     btn.addEventListener('click', () => switchAutoReplySubtab(btn.dataset.subtab));
   });
 
@@ -2862,3 +2246,411 @@ document.addEventListener('DOMContentLoaded', () => {
   const refreshBtn = document.getElementById('btn-refresh-leads');
   if (refreshBtn) refreshBtn.addEventListener('click', loadLeads);
 });
+
+
+// ==========================================
+// Auto Post Scheduler V2 (Phase 3.0A)
+// ==========================================
+(function initAutoPostScheduler() {
+  const ZODIAC_OPTIONS = [
+    { index: 1, label: "1. மேஷம் – Aries" },
+    { index: 2, label: "2. ரிஷபம் – Taurus" },
+    { index: 3, label: "3. மிதுனம் – Gemini" },
+    { index: 4, label: "4. கடகம் – Cancer" },
+    { index: 5, label: "5. சிம்மம் – Leo" },
+    { index: 6, label: "6. கன்னி – Virgo" },
+    { index: 7, label: "7. துலாம் – Libra" },
+    { index: 8, label: "8. விருச்சிகம் – Scorpio" },
+    { index: 9, label: "9. தனுசு – Sagittarius" },
+    { index: 10, label: "10. மகரம் – Capricorn" },
+    { index: 11, label: "11. கும்பம் – Aquarius" },
+    { index: 12, label: "12. மீனம் – Pisces" },
+  ];
+
+  const DAY_NAMES = {
+    "-1": "Every Day",
+    "0": "Monday",
+    "1": "Tuesday",
+    "2": "Wednesday",
+    "3": "Thursday",
+    "4": "Friday",
+    "5": "Saturday",
+    "6": "Sunday",
+  };
+
+  let currentBatch = null;
+  let draggedPostId = null;
+
+  // Subsection switching
+  document.querySelectorAll(".autopost-sub-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const target = btn.dataset.subtab;
+      document.querySelectorAll(".autopost-sub-btn").forEach((b) => {
+        b.classList.toggle("btn-primary", b.dataset.subtab === target);
+        b.classList.toggle("btn-secondary", b.dataset.subtab !== target);
+      });
+      document.querySelectorAll(".autopost-subsection").forEach((sec) => {
+        sec.style.display = sec.id === `autopost-sub-${target}` ? "block" : "none";
+      });
+      if (target === "schedule") loadPostingSlots();
+      if (target === "posts") loadScheduledPosts();
+    });
+  });
+
+  // File upload & drag-drop
+  const dropzone = document.getElementById("autopost-dropzone");
+  const fileInput = document.getElementById("autopost-file-input");
+  const browseBtn = document.getElementById("autopost-browse-btn");
+
+  if (browseBtn && fileInput) {
+    browseBtn.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", (e) => {
+      if (e.target.files && e.target.files.length > 0) {
+        uploadBatchFiles(e.target.files);
+      }
+    });
+  }
+
+  if (dropzone) {
+    dropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropzone.style.background = "rgba(99,102,241,0.14)";
+    });
+    dropzone.addEventListener("dragleave", () => {
+      dropzone.style.background = "rgba(99,102,241,0.05)";
+    });
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.style.background = "rgba(99,102,241,0.05)";
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        uploadBatchFiles(e.dataTransfer.files);
+      }
+    });
+  }
+
+  async function uploadBatchFiles(fileList) {
+    const category = document.getElementById("autopost-category-select").value;
+    const formData = new FormData();
+    Array.from(fileList).forEach((f) => formData.append("files", f));
+
+    const res = await fetch(`/api/auto-post/upload-batch?category=${encodeURIComponent(category)}`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) {
+      alert("Upload failed");
+      return;
+    }
+    currentBatch = await res.json();
+    renderBatchPreview();
+  }
+
+  function renderBatchPreview() {
+    if (!currentBatch) return;
+    const previewEl = document.getElementById("autopost-batch-preview");
+    const warningsEl = document.getElementById("autopost-batch-warnings");
+    const listEl = document.getElementById("autopost-batch-list");
+    const countEl = document.getElementById("autopost-batch-count");
+
+    previewEl.style.display = "block";
+    countEl.textContent = currentBatch.items.length;
+
+    const warnings = [];
+    if (currentBatch.missing_signs && currentBatch.missing_signs.length > 0) {
+      warnings.push(`Missing signs: ${currentBatch.missing_signs.map((s) => s.tamil).join(", ")}`);
+    }
+    if (currentBatch.duplicate_signs && currentBatch.duplicate_signs.length > 0) {
+      warnings.push(`Duplicate signs: ${currentBatch.duplicate_signs.map((s) => `${s.tamil} (${s.count}x)`).join(", ")}`);
+    }
+    if (currentBatch.undetected_files && currentBatch.undetected_files.length > 0) {
+      warnings.push(`Undetected files: ${currentBatch.undetected_files.join(", ")}`);
+    }
+
+    if (warnings.length > 0) {
+      warningsEl.style.display = "block";
+      warningsEl.style.padding = "12px 16px";
+      warningsEl.style.borderLeft = "4px solid #f59e0b";
+      warningsEl.innerHTML = `<strong>Warning:</strong> ${warnings.join(" | ")}`;
+    } else {
+      warningsEl.style.display = "none";
+    }
+
+    listEl.innerHTML = currentBatch.items
+      .map((item, idx) => {
+        const opts = ZODIAC_OPTIONS.map(
+          (z) => `<option value="${z.index}" ${z.index === item.zodiac_index ? "selected" : ""}>${z.label}</option>`
+        ).join("");
+        return `
+          <div style="display:grid;grid-template-columns:1.2fr 1fr 2fr;gap:10px;align-items:center;padding:10px;border:1px solid rgba(255,255,255,0.1);border-radius:8px;">
+            <div style="font-weight:600;word-break:break-all;">${item.original_filename}</div>
+            <select class="form-control autopost-zodiac-fix" data-idx="${idx}" style="padding:6px;">
+              <option value="">-- Select Sign --</option>
+              ${opts}
+            </select>
+            <input type="text" class="form-control autopost-caption-edit" data-idx="${idx}" value="${(item.caption || "").replace(/"/g, "&quot;")}" style="padding:6px;" />
+          </div>
+        `;
+      })
+      .join("");
+
+    listEl.querySelectorAll(".autopost-zodiac-fix").forEach((sel) => {
+      sel.addEventListener("change", (e) => {
+        const idx = parseInt(e.target.dataset.idx, 10);
+        currentBatch.items[idx].zodiac_index = parseInt(e.target.value, 10) || null;
+      });
+    });
+    listEl.querySelectorAll(".autopost-caption-edit").forEach((inp) => {
+      inp.addEventListener("input", (e) => {
+        const idx = parseInt(e.target.dataset.idx, 10);
+        currentBatch.items[idx].caption = e.target.value;
+      });
+    });
+  }
+
+  // One-click SCHEDULE ALL (Multi-Channel)
+  const scheduleAllBtn = document.getElementById("autopost-schedule-all-btn");
+  if (scheduleAllBtn) {
+    scheduleAllBtn.addEventListener("click", async () => {
+      if (!currentBatch || !currentBatch.items.length) return;
+      const checked = Array.from(document.querySelectorAll(".autopost-channel-checkbox:checked"));
+      if (checked.length === 0) {
+        alert("Please select at least one publishing channel.");
+        return;
+      }
+      const accounts = checked.map((cb) => {
+        const [account_key, platform] = cb.value.split("|");
+        return { account_key, platform };
+      });
+      const category = document.getElementById("autopost-category-select").value;
+
+      const payload = {
+        accounts,
+        category,
+        batch_id: currentBatch.batch_id,
+        items: currentBatch.items.map((i) => ({
+          original_filename: i.original_filename,
+          media_path: i.media_path,
+          file_size_bytes: i.file_size_bytes || 0,
+          zodiac_index: i.zodiac_index,
+          caption: i.caption,
+          hashtags: i.hashtags,
+        })),
+      };
+
+      const res = await fetch("/api/auto-post/schedule-multichannel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      const summaryEl = document.getElementById("autopost-schedule-summary");
+      if (!res.ok) {
+        alert(data.detail || "Failed to schedule batch");
+        return;
+      }
+      const firstTime = data.posts && data.posts.length ? data.posts[0].scheduled_at.replace("T", " ") : "N/A";
+      summaryEl.style.display = "block";
+      summaryEl.innerHTML = `
+        <strong>Scheduled Successfully!</strong><br/>
+        Videos imported: ${data.videos_count} |
+        Channels selected: ${data.channels_count} |
+        Total publishing jobs: ${data.scheduled_count} |
+        First scheduled slot: ${firstTime}
+      `;
+    });
+  }
+
+  // Posting Schedule slots
+  async function loadPostingSlots() {
+    const accountKey = document.getElementById("slot-account-select").value;
+    const res = await fetch(`/api/auto-post/slots?account_key=${encodeURIComponent(accountKey)}`);
+    const data = await res.json();
+    const listEl = document.getElementById("posting-slots-list");
+    if (!data.slots || data.slots.length === 0) {
+      listEl.innerHTML = `<p style="opacity:0.7;">No custom slots configured for ${accountKey}. Default daily slots (09:00, 18:00) will be used.</p>`;
+      return;
+    }
+    listEl.innerHTML = data.slots
+      .map(
+        (s) => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border:1px solid rgba(255,255,255,0.1);border-radius:6px;">
+          <span><strong>${DAY_NAMES[String(s.day_of_week)] || "Day " + s.day_of_week}</strong> at <code>${s.slot_time}</code></span>
+          <button type="button" class="btn btn-secondary delete-slot-btn" data-id="${s.id}" style="padding:4px 10px;">Remove</button>
+        </div>
+      `
+      )
+      .join("");
+
+    listEl.querySelectorAll(".delete-slot-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await fetch(`/api/auto-post/slots/${btn.dataset.id}`, { method: "DELETE" });
+        loadPostingSlots();
+      });
+    });
+  }
+
+  const slotAccSel = document.getElementById("slot-account-select");
+  if (slotAccSel) slotAccSel.addEventListener("change", loadPostingSlots);
+
+  const addSlotBtn = document.getElementById("add-slot-btn");
+  if (addSlotBtn) {
+    addSlotBtn.addEventListener("click", async () => {
+      const accountKey = document.getElementById("slot-account-select").value;
+      const dayOfWeek = parseInt(document.getElementById("slot-day-select").value, 10);
+      const slotTime = document.getElementById("slot-time-input").value;
+      const existingRes = await fetch(`/api/auto-post/slots?account_key=${encodeURIComponent(accountKey)}`);
+      const existingData = await existingRes.json();
+      const slots = (existingData.slots || []).map((s) => ({
+        day_of_week: s.day_of_week,
+        slot_time: s.slot_time,
+      }));
+      slots.push({ day_of_week: dayOfWeek, slot_time: slotTime });
+      await fetch("/api/auto-post/slots", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ account_key: accountKey, slots }),
+      });
+      loadPostingSlots();
+    });
+  }
+
+  // Scheduled Posts & Drag-and-Drop (Grouped by Video)
+  async function loadScheduledPosts() {
+    const res = await fetch("/api/auto-post/posts");
+    const data = await res.json();
+    const grid = document.getElementById("scheduled-posts-grid");
+    if (!data.posts || data.posts.length === 0) {
+      grid.innerHTML = `<p style="opacity:0.7;">No scheduled posts yet.</p>`;
+      return;
+    }
+
+    const groups = new Map();
+    data.posts.forEach((p) => {
+      const key = p.video_id || `post_${p.id}`;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          video_id: p.video_id || null,
+          first_id: p.id,
+          zodiac_tamil: p.zodiac_tamil,
+          zodiac_english: p.zodiac_english,
+          scheduled_at: p.scheduled_at,
+          caption: p.caption,
+          jobs: [],
+        });
+      }
+      groups.get(key).jobs.push(p);
+    });
+
+    const statusLabels = {
+      scheduled: "Scheduled",
+      preparing: "Preparing",
+      uploading: "Uploading",
+      processing: "Processing",
+      publishing: "Publishing",
+      published: "Published",
+      published_safe_mode: "Published (Safe Mode)",
+      retry_waiting: "Retry Waiting",
+      auth_required: "Authentication Required",
+      failed: "Failed",
+      cancelled: "Cancelled",
+    };
+
+    grid.innerHTML = Array.from(groups.values())
+      .map((g) => {
+        const destHtml = g.jobs
+          .map((j) => {
+            const label = statusLabels[j.status] || j.status;
+            const progHtml = j.upload_progress_pct > 0 && j.status !== "published" && j.status !== "published_safe_mode"
+              ? ` (${Math.round(j.upload_progress_pct)}%)`
+              : "";
+            const metaParts = [];
+            if (j.attempt_count > 0) metaParts.push(`Attempts: ${j.attempt_count}`);
+            if (j.next_retry_at) metaParts.push(`Next retry: ${j.next_retry_at.replace("T", " ")}`);
+            const metaHtml = metaParts.length
+              ? `<div style="font-size:0.72rem;opacity:0.7;margin-top:2px;">${metaParts.join(" • ")}</div>`
+              : "";
+            const errHtml = j.error_message
+              ? `<div style="font-size:0.75rem;color:#f87171;margin-top:2px;">${j.error_message}</div>`
+              : "";
+            const refHtml = j.external_post_id
+              ? `<div style="font-size:0.75rem;opacity:0.75;margin-top:2px;">ID: ${j.external_post_id}${j.permalink ? ` • <a href="${j.permalink}" target="_blank" rel="noopener">View</a>` : ""}</div>`
+              : "";
+            const retryBtn = ["failed", "retry_waiting", "auth_required"].includes(j.status)
+              ? `<button type="button" class="btn btn-secondary retry-post-btn" data-id="${j.id}" style="padding:2px 8px;font-size:0.72rem;margin-left:6px;">Retry</button>`
+              : "";
+            return `
+            <div style="font-size:0.82rem;padding:6px 8px;border-radius:6px;background:rgba(255,255,255,0.04);margin-bottom:4px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="text-transform:capitalize;">${j.platform} (${j.account_key})</span>
+                <span><span style="padding:2px 8px;border-radius:12px;background:rgba(99,102,241,0.2);">${label}${progHtml}</span>${retryBtn}</span>
+              </div>
+              ${metaHtml}${errHtml}${refHtml}
+            </div>
+          `;
+          })
+          .join("");
+        return `
+        <div class="card scheduled-post-card" draggable="true" data-videoid="${g.video_id || ""}" data-id="${g.first_id}" data-time="${g.scheduled_at}" style="padding:14px;border:1px solid rgba(255,255,255,0.12);cursor:grab;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <strong>${g.zodiac_tamil} (${g.zodiac_english})</strong>
+            <span style="font-size:0.8rem;opacity:0.8;">${g.scheduled_at.replace("T", " ")}</span>
+          </div>
+          <div style="font-size:0.85rem;margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${g.caption}</div>
+          <div style="margin-bottom:10px;">${destHtml}</div>
+          <div style="display:flex;gap:6px;">
+            <button type="button" class="btn btn-secondary cancel-post-btn" data-id="${g.first_id}" style="padding:4px 10px;font-size:0.8rem;">Cancel</button>
+          </div>
+        </div>
+      `;
+      })
+      .join("");
+
+    let draggedVideoId = null;
+    grid.querySelectorAll(".scheduled-post-card").forEach((card) => {
+      card.addEventListener("dragstart", () => {
+        draggedPostId = card.dataset.id;
+        draggedVideoId = card.dataset.videoid || null;
+      });
+      card.addEventListener("dragover", (e) => e.preventDefault());
+      card.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        const targetTime = card.dataset.time;
+        if (!draggedPostId || draggedPostId === card.dataset.id) return;
+        const url = draggedVideoId
+          ? `/api/auto-post/videos/${encodeURIComponent(draggedVideoId)}/reschedule`
+          : `/api/auto-post/posts/${draggedPostId}/reschedule`;
+        const res = await fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scheduled_at: targetTime }),
+        });
+        const result = await res.json();
+        if (!res.ok) {
+          alert(result.detail || "Reschedule conflict");
+        } else {
+          loadScheduledPosts();
+        }
+        draggedPostId = null;
+        draggedVideoId = null;
+      });
+    });
+
+    grid.querySelectorAll(".cancel-post-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await fetch(`/api/auto-post/posts/${btn.dataset.id}/cancel`, { method: "POST" });
+        loadScheduledPosts();
+      });
+    });
+
+    grid.querySelectorAll(".retry-post-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await fetch(`/api/auto-post/posts/${btn.dataset.id}/retry`, { method: "POST" });
+        loadScheduledPosts();
+      });
+    });
+  }
+
+  const refreshPostsBtn = document.getElementById("refresh-scheduled-posts-btn");
+  if (refreshPostsBtn) refreshPostsBtn.addEventListener("click", loadScheduledPosts);
+})();
