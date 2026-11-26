@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gokul Social Publisher</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-badge">GSP</div>
+        <h2>Gokul Publisher</h2>
+      </div>
+
+      <nav class="nav-menu">
+        <button class="nav-item active" data-tab="dashboard">
+          <span class="icon">📊</span>
+          <span>Dashboard</span>
+        </button>
+        <button class="nav-item" data-tab="accounts">
+          <span class="icon">🔗</span>
+          <span>Accounts</span>
+        </button>
+        <button class="nav-item" data-tab="autoreply">
+          <span class="icon">⚡</span>
+          <span>Auto Reply</span>
+        </button>
+        <button class="nav-item" data-tab="activity">
+          <span class="icon">📋</span>
+          <span>Activity</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-status">
+        <div class="status-indicator online"></div>
+        <span>System Ready</span>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="content-area">
+      <!-- Top Bar -->
+      <header class="topbar">
+        <h1 id="page-title">Dashboard</h1>
+        <div class="master-toggle-container">
+          <span class="master-label">Auto Reply:</span>
+          <label class="switch">
+            <input type="checkbox" id="master-toggle">
+            <span class="slider round"></span>
+          </label>
+          <span id="master-status-badge" class="badge off">OFF</span>
+        </div>
+      </header>
+
+      <!-- View: Dashboard -->
+      <section id="view-dashboard" class="tab-view active">
+        <div class="hero-card">
+          <div class="hero-content">
+            <h2 id="hero-status-title">Automatic Comment Reply is Paused</h2>
+            <p id="hero-status-desc">Turn on the switch in the top bar to begin automatically responding to comments on your connected accounts.</p>
+          </div>
+          <button id="quick-toggle-btn" class="primary-btn">Turn ON Auto Reply</button>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="stat-icon">👥</span>
+            <div class="stat-info">
+              <span class="stat-value" id="stat-accounts">0</span>
+              <span class="stat-label">Connected Accounts</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-icon">💬</span>
+            <div class="stat-info">
+              <span class="stat-value" id="stat-processed">0</span>
+              <span class="stat-label">Comments Processed</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-icon">🚀</span>
+            <div class="stat-info">
+              <span class="stat-value" id="stat-replied">0</span>
+              <span class="stat-label">Replies Sent</span>
+            </div>
+          </div>
+          <div class="stat-card">
+            <span class="stat-icon">⚠️</span>
+            <div class="stat-info">
+              <span class="stat-value" id="stat-pending">0</span>
+              <span class="stat-label">Pending Review</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Recent Auto Reply Activity</h3>
+            <button class="link-btn" onclick="switchTab('activity')">View All Activity →</button>
+          </div>
+          <div id="dashboard-recent-activity" class="recent-list">
+            <div class="empty-state">No comments processed yet. Connected account activity will appear here.</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- View: Accounts -->
+      <section id="view-accounts" class="tab-view">
+        <div id="accounts-notification-banner" class="form-msg hidden" style="margin-bottom: 16px;"></div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Connected Social Platforms</h3>
+            <span class="helper-text">Platforms are configured one-by-one with official OAuth credentials.</span>
+          </div>
+
+          <div class="platform-cards-grid">
+            <!-- Facebook Card (Phase 2 Target) -->
+            <div class="platform-card" id="card-facebook">
+              <div class="platform-header">
+                <span class="platform-badge fb">Facebook</span>
+                <span class="status-pill disconnected" id="fb-status-pill">Not Connected</span>
+              </div>
+              <h4 id="fb-page-title">Facebook Pages</h4>
+              <p id="fb-page-desc">Detect and reply to comments on your official Facebook page posts.</p>
+              <div class="platform-action" id="fb-action-area">
+                <button class="primary-btn sm" id="btn-connect-facebook">Connect Facebook</button>
+              </div>
+            </div>
+
+            <!-- Instagram Card (Phase 3) -->
+            <div class="platform-card" id="card-instagram">
+              <div class="platform-header">
+                <span class="platform-badge ig">Instagram</span>
+                <span class="status-pill disconnected" id="ig-status-pill">Not Connected</span>
+              </div>
+              <h4 id="ig-account-title">Instagram Professional</h4>
+              <p id="ig-account-desc">Automatic replies for comments on Instagram reels and posts.</p>
+              <div class="platform-action" id="ig-action-area">
+                <button class="primary-btn sm" id="btn-connect-instagram">Connect Instagram</button>
+              </div>
+            </div>
+
+            <!-- YouTube Card -->
+            <div class="platform-card" id="card-youtube">
+              <div class="platform-header">
+                <span class="platform-badge yt">YouTube</span>
+                <span class="status-pill disconnected" id="yt-status-pill">Not Connected</span>
+              </div>
+              <h4 id="yt-channel-title">YouTube Channel</h4>
+              <p id="yt-channel-desc">Automatic replies for viewers on video comments.</p>
+              <div class="platform-action" id="yt-action-area">
+                <button class="primary-btn sm" id="btn-connect-youtube">Connect YouTube</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- View: Auto Reply -->
+      <section id="view-autoreply" class="tab-view">
+        <div class="subtab-bar" role="tablist" aria-label="Auto Reply Subsections">
+          <button class="subtab-btn active" data-subtab="automatic" role="tab" aria-selected="true">
+            Automatic Replies
+          </button>
+          <button class="subtab-btn" data-subtab="approval" role="tab" aria-selected="false">
+            Approval Queue <span id="aq-pending-badge" class="aq-badge">0</span>
+          </button>
+          <button class="subtab-btn" data-subtab="platform-settings" role="tab" aria-selected="false">
+            Platform Settings
+          </button>
+        </div>
+
+        <div id="subview-automatic" class="subtab-view active">
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Auto Reply Controls</h3>
+          </div>
+
+          <div class="settings-list">
+            <div class="setting-row">
+              <div class="setting-info">
+                <h4>Master Auto Reply</h4>
+                <p>When enabled, comments are processed and answered automatically.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="settings-master-toggle">
+                <span class="slider round"></span>
+              </label>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-info">
+                <h4>Safe Testing Mode</h4>
+                <p>Logs and validates detected comments without posting real replies to live APIs.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="settings-safe-mode-toggle" checked>
+                <span class="slider round"></span>
+              </label>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-info">
+                <h4>Facebook Comment Sync</h4>
+                <p>Fetch latest comments from connected Facebook Page and run automatic replies.</p>
+              </div>
+              <button class="secondary-btn sm" id="btn-sync-facebook">Sync Facebook Now</button>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-info">
+                <h4>Instagram Auto Reply</h4>
+                <p>When enabled, comments on connected Instagram posts and Reels are answered automatically.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="settings-ig-auto-reply-toggle">
+                <span class="slider round"></span>
+              </label>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-info">
+                <h4>Instagram Comment Sync</h4>
+                <p>Fetch latest comments from connected Instagram Professional account and run automatic replies.</p>
+              </div>
+              <button class="secondary-btn sm" id="btn-sync-instagram">Sync Instagram Now</button>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-info">
+                <h4>YouTube Auto Reply</h4>
+                <p>When enabled, comments on connected YouTube channel videos are answered automatically.</p>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="settings-yt-auto-reply-toggle">
+                <span class="slider round"></span>
+              </label>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-info">
+                <h4>YouTube Comment Sync</h4>
+                <p>Fetch latest comments from connected YouTube channel and run automatic replies.</p>
+              </div>
+              <button class="secondary-btn sm" id="btn-sync-youtube">Sync YouTube Now</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Safe Comment Simulator (Test Tamil, Tanglish & English)</h3>
+          </div>
+          <p class="helper-text" style="margin-bottom: 14px;">Safely test how the deterministic engine analyzes and responds to comments before going live.</p>
+          <div class="simulator-box">
+            <div class="input-group">
+              <input type="text" id="sim-comment-text" placeholder="Type a test comment, e.g., 'Super bro vera level' or 'வணக்கம் நன்றி' or 'Love this post!'" />
+              <button class="primary-btn" id="btn-test-sim">Test Reply</button>
+            </div>
+            <div id="sim-result-box" class="sim-result hidden">
+              <div class="sim-meta">
+                <span>Detected Lang: <strong id="sim-lang">-</strong></span>
+                <span>Intent: <strong id="sim-intent">-</strong></span>
+                <span>Action: <strong id="sim-status">-</strong></span>
+              </div>
+              <div class="sim-reply">
+                <span>Generated Reply:</span>
+                <p id="sim-reply-text">—</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Supported Languages & Intent Rules</h3>
+          </div>
+          <div class="info-grid">
+            <div class="info-card">
+              <h4>🗣️ Languages Handled</h4>
+              <p>Automatic support for <strong>Tamil</strong>, <strong>English</strong>, and <strong>Tanglish</strong> (Tamil written in Latin script).</p>
+            </div>
+            <div class="info-card">
+              <h4>🎯 Deterministic Intent</h4>
+              <p>Standardized, reliable rules map greetings, praise, and common inquiries to respectful responses.</p>
+            </div>
+            <div class="info-card">
+              <h4>🛡️ Abuse & Self-Comment Safety</h4>
+              <p>Self-comments are automatically skipped. Complaints or sensitive comments are flagged for manual review.</p>
+            </div>
+          </div>
+        </div>
+        </div><!-- /subview-automatic -->
+
+        <div id="subview-approval" class="subtab-view hidden">
+          <div class="panel aq-header-panel">
+            <div class="aq-header-top">
+              <div>
+                <h3>Approval Queue</h3>
+                <p class="helper-text">Review flagged comments before any reply is approved. <strong id="aq-pending-summary">0 pending</strong></p>
+              </div>
+              <div class="aq-header-actions">
+                <span id="aq-safe-mode-pill" class="aq-safe-pill">🛡️ Safe Testing Mode ON (No public replies)</span>
+                <button id="aq-refresh-btn" class="secondary-btn sm">Refresh</button>
+              </div>
+            </div>
+
+            <div class="aq-filters">
+              <div class="aq-filter-group" aria-label="Platform filter">
+                <span class="aq-filter-label">Platform:</span>
+                <button class="aq-filter-btn active" data-platform="all">All Platforms</button>
+                <button class="aq-filter-btn" data-platform="facebook">Facebook</button>
+                <button class="aq-filter-btn" data-platform="instagram">Instagram</button>
+                <button class="aq-filter-btn" data-platform="youtube">YouTube</button>
+              </div>
+              <div class="aq-filter-group" aria-label="Status filter">
+                <span class="aq-filter-label">Status:</span>
+                <button class="aq-status-btn active" data-status="pending">Pending</button>
+                <button class="aq-status-btn" data-status="approved">Approved</button>
+                <button class="aq-status-btn" data-status="rejected">Rejected</button>
+                <button class="aq-status-btn" data-status="replied">Replied</button>
+                <button class="aq-status-btn" data-status="failed">Failed</button>
+                <button class="aq-status-btn" data-status="history">History</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="aq-feedback" class="aq-feedback hidden" role="status" aria-live="polite"></div>
+
+          <div id="aq-loading" class="aq-loading hidden">
+            <div class="aq-spinner"></div>
+            <span>Loading approval queue...</span>
+          </div>
+
+          <div id="aq-empty" class="panel aq-empty hidden">
+            <div class="aq-empty-icon">✅</div>
+            <h4 id="aq-empty-title">No comments need approval</h4>
+            <p id="aq-empty-desc">All caught up! New comments flagged for manual review will appear here.</p>
+          </div>
+
+          <div id="aq-cards-list" class="aq-cards-list"></div>
+        </div><!-- /subview-approval -->
+
+        <div id="subview-platform-settings" class="subtab-view hidden">
+          <div class="panel">
+            <div class="panel-header">
+              <div>
+                <h3>Platform-Specific Hybrid Settings</h3>
+                <p class="subtitle" style="margin: 4px 0 0;">Configure Facebook, Instagram, and YouTube independently.</p>
+              </div>
+            </div>
+            <div class="subtab-bar" role="tablist" aria-label="Platform Tabs" style="margin-bottom: 16px;">
+              <button type="button" class="subtab-btn active" data-ps-platform="facebook" onclick="selectPlatformSettingsTab('facebook')">Facebook</button>
+              <button type="button" class="subtab-btn" data-ps-platform="instagram" onclick="selectPlatformSettingsTab('instagram')">Instagram</button>
+              <button type="button" class="subtab-btn" data-ps-platform="youtube" onclick="selectPlatformSettingsTab('youtube')">YouTube</button>
+            </div>
+            <div id="ps-feedback" class="aq-feedback hidden" role="status"></div>
+            <div id="ps-panel-body">Loading platform settings...</div>
+          </div>
+        </div><!-- /subview-platform-settings -->
+      </section>
+
+      <!-- View: Activity -->
+      <section id="view-activity" class="tab-view">
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Activity History</h3>
+            <button class="secondary-btn sm" id="refresh-activity-btn">Refresh</button>
+          </div>
+          <div class="table-container">
+            <table class="activity-table">
+              <thead>
+                <tr>
+                  <th>Platform</th>
+                  <th>Commenter</th>
+                  <th>Comment</th>
+                  <th>Language / Intent</th>
+                  <th>Action / Reply</th>
+                  <th>Status</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody id="activity-table-body">
+                <tr>
+                  <td colspan="7" class="empty-state">No activity logged yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Facebook Connect Modal -->
+  <div id="fb-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Connect Facebook Page</h3>
+        <button class="close-btn" id="btn-close-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="tab-nav-small" style="display: flex; gap: 8px; margin-bottom: 14px;">
+          <button class="secondary-btn sm active" id="btn-tab-oauth" style="background-color: var(--accent-color); color: white;">Meta OAuth Login</button>
+          <button class="secondary-btn sm" id="btn-tab-manual">Manual Token</button>
+        </div>
+
+        <!-- OAuth Section -->
+        <div id="fb-oauth-section">
+          <div id="fb-oauth-ready" class="hidden">
+            <p class="helper-text" style="margin-bottom: 14px;">
+              Meta App credentials configured. Click below to sign in with your Facebook account and select your Page.
+            </p>
+            <div style="text-align: center; margin: 16px 0;">
+              <a href="/api/facebook/login" class="primary-btn" id="btn-login-facebook" style="text-decoration: none; display: inline-flex; align-items: center; gap: 8px; background-color: #1877f2; padding: 12px 24px; font-size: 15px;">
+                <span>🌐</span> Continue with Facebook
+              </a>
+            </div>
+            <div style="border-top: 1px solid var(--border-color); padding-top: 10px; margin-top: 16px;">
+              <button class="link-btn" id="btn-reconfigure-meta" style="font-size: 12px;">Edit Meta App Credentials</button>
+            </div>
+          </div>
+
+          <div id="fb-oauth-config-form">
+            <p class="helper-text" style="margin-bottom: 14px;">
+              Enter your Meta Developer App ID and App Secret. Never shared publicly.
+            </p>
+            <div class="form-group">
+              <label for="fb-app-id">Meta App ID</label>
+              <input type="text" id="fb-app-id" placeholder="e.g. 123456789012345" />
+            </div>
+            <div class="form-group">
+              <label for="fb-app-secret">Meta App Secret</label>
+              <input type="password" id="fb-app-secret" placeholder="App Secret from Meta Developer Dashboard" />
+            </div>
+            <div class="form-group">
+              <label>OAuth Redirect URI (Add to Meta Developer Dashboard):</label>
+              <input type="text" id="fb-redirect-uri" value="http://localhost:8088/api/facebook/callback" readonly style="background: #f1f5f9; color: #475569;" />
+              <span class="form-hint">Paste into: Facebook Login → Settings → Valid OAuth Redirect URIs</span>
+            </div>
+            <div style="margin-top: 10px;">
+              <button class="primary-btn sm" id="btn-save-meta-creds">Save Credentials & Proceed to Login</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Manual Token Section -->
+        <div id="fb-manual-section" class="hidden">
+          <p class="helper-text" style="margin-bottom: 14px;">
+            Or connect directly with a Page Access Token generated in Graph API Explorer.
+          </p>
+          <div class="form-group">
+            <label for="fb-input-page-name">Page Name</label>
+            <input type="text" id="fb-input-page-name" placeholder="e.g. My Business Page" />
+          </div>
+          <div class="form-group">
+            <label for="fb-input-page-id">Page ID</label>
+            <input type="text" id="fb-input-page-id" placeholder="e.g. 102938475610293" />
+          </div>
+          <div class="form-group">
+            <label for="fb-input-token">Page Access Token</label>
+            <input type="password" id="fb-input-token" placeholder="Meta Page Access Token (EAAB...)" />
+            <span class="form-hint">Requires pages_read_engagement and pages_manage_posts.</span>
+          </div>
+          <div style="margin-top: 10px;">
+            <button class="primary-btn sm" id="btn-save-facebook-manual">Save Page Token</button>
+          </div>
+        </div>
+
+        <div id="fb-connect-msg" class="form-msg hidden" style="margin-top: 14px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="secondary-btn" id="btn-cancel-modal">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Page Selection Modal -->
+  <div id="fb-select-page-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Select Facebook Page to Connect</h3>
+        <button class="close-btn" id="btn-close-select-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="helper-text" style="margin-bottom: 14px;">
+          Select which authorized Facebook Page you want Gokul Social Publisher to monitor for automatic comment replies.
+        </p>
+        <div class="form-group">
+          <label for="fb-pages-dropdown">Available Pages</label>
+          <select id="fb-pages-dropdown" style="padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); font-size: 13px; width: 100%;">
+            <option value="">Loading pages...</option>
+          </select>
+        </div>
+        <div id="fb-select-page-msg" class="form-msg hidden" style="margin-top: 12px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="secondary-btn" id="btn-cancel-select-modal">Cancel</button>
+        <button class="primary-btn" id="btn-confirm-select-page">Connect Page</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Instagram Connect Modal -->
+  <div id="ig-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Connect Instagram Professional Account</h3>
+        <button class="close-btn" id="btn-close-ig-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="tab-nav-small" style="display: flex; gap: 8px; margin-bottom: 14px;">
+          <button class="secondary-btn sm active" id="btn-ig-tab-oauth" style="background-color: var(--accent-color); color: white;">Meta OAuth Login</button>
+          <button class="secondary-btn sm" id="btn-ig-tab-manual">Manual Token</button>
+        </div>
+
+        <div id="ig-oauth-section">
+          <div id="ig-oauth-ready" class="hidden">
+            <p class="helper-text" style="margin-bottom: 14px;">
+              Meta App credentials configured. Sign in with your <strong>Facebook account</strong> (the Page admin linked to your Instagram Professional account). Do not enter your Instagram username/password on the Facebook login screen.
+            </p>
+            <div style="text-align: center; margin: 16px 0;">
+              <a href="/api/instagram/login" class="primary-btn" id="btn-login-instagram" style="text-decoration: none; display: inline-flex; align-items: center; gap: 8px; background-color: #1877f2; padding: 12px 24px; font-size: 15px;">
+                <span>🌐</span> Continue with Facebook (for Instagram)
+              </a>
+            </div>
+            <div style="border-top: 1px solid var(--border-color); padding-top: 10px; margin-top: 16px;">
+              <button class="link-btn" id="btn-reconfigure-ig-meta" style="font-size: 12px;">Edit Meta App Credentials</button>
+            </div>
+          </div>
+
+          <div id="ig-oauth-config-form">
+            <p class="helper-text" style="margin-bottom: 14px;">
+              Enter your Meta Developer App ID and App Secret. Never shared publicly.
+            </p>
+            <div class="form-group">
+              <label for="ig-app-id">Meta App ID</label>
+              <input type="text" id="ig-app-id" placeholder="e.g. 123456789012345" />
+            </div>
+            <div class="form-group">
+              <label for="ig-app-secret">Meta App Secret</label>
+              <input type="password" id="ig-app-secret" placeholder="App Secret from Meta Developer Dashboard" />
+            </div>
+            <div class="form-group">
+              <label>Instagram OAuth Redirect URI (Add to Meta Developer Dashboard):</label>
+              <input type="text" id="ig-redirect-uri" value="http://localhost:8088/api/instagram/callback" readonly style="background: #f1f5f9; color: #475569;" />
+              <span class="form-hint">Paste into: Facebook Login → Settings → Valid OAuth Redirect URIs</span>
+            </div>
+            <div style="margin-top: 10px;">
+              <button class="primary-btn sm" id="btn-save-ig-meta-creds">Save Credentials & Proceed to Login</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="ig-manual-section" class="hidden">
+          <p class="helper-text" style="margin-bottom: 14px;">
+            Or connect directly with an Instagram Business Account ID and Access Token from Graph API Explorer.
+          </p>
+          <div class="form-group">
+            <label for="ig-input-account-name">Account Name / Handle</label>
+            <input type="text" id="ig-input-account-name" placeholder="e.g. @mybrand" />
+          </div>
+          <div class="form-group">
+            <label for="ig-input-account-id">Instagram Account ID</label>
+            <input type="text" id="ig-input-account-id" placeholder="e.g. 17841400000000000" />
+          </div>
+          <div class="form-group">
+            <label for="ig-input-token">Access Token</label>
+            <input type="password" id="ig-input-token" placeholder="Meta Access Token (EAAB...)" />
+            <span class="form-hint">Requires instagram_basic and instagram_manage_comments.</span>
+          </div>
+          <div style="margin-top: 10px;">
+            <button class="primary-btn sm" id="btn-save-instagram-manual">Save Instagram Token</button>
+          </div>
+        </div>
+
+        <div id="ig-connect-msg" class="form-msg hidden" style="margin-top: 14px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="secondary-btn" id="btn-cancel-ig-modal">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Instagram Account Selection Modal -->
+  <div id="ig-select-account-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Select Instagram Professional Account</h3>
+        <button class="close-btn" id="btn-close-ig-select-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="helper-text" style="margin-bottom: 14px;">
+          Select which authorized Instagram Professional account you want Gokul Social Publisher to monitor.
+        </p>
+        <div class="form-group">
+          <label for="ig-accounts-dropdown">Available Instagram Accounts</label>
+          <select id="ig-accounts-dropdown" style="padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); font-size: 13px; width: 100%;">
+            <option value="">Loading accounts...</option>
+          </select>
+        </div>
+        <div id="ig-select-account-msg" class="form-msg hidden" style="margin-top: 12px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="secondary-btn" id="btn-cancel-ig-select-modal">Cancel</button>
+        <button class="primary-btn" id="btn-confirm-select-ig-account">Connect Account</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- YouTube Connect Modal -->
+  <div id="yt-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Connect YouTube Channel</h3>
+        <button class="close-btn" id="btn-close-yt-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="tab-nav-small" style="display: flex; gap: 8px; margin-bottom: 14px;">
+          <button class="secondary-btn sm active" id="btn-yt-tab-oauth" style="background-color: var(--accent-color); color: white;">Google OAuth Login</button>
+          <button class="secondary-btn sm" id="btn-yt-tab-manual">Manual Token</button>
+        </div>
+
+        <div id="yt-oauth-section">
+          <div id="yt-oauth-ready" class="hidden">
+            <p class="helper-text" style="margin-bottom: 14px;">
+              Google Cloud credentials configured. Sign in with your <strong>Google Account</strong> to connect your YouTube Channel. Never enter Google passwords into third-party forms.
+            </p>
+            <div style="text-align: center; margin: 16px 0;">
+              <a href="/api/youtube/login" class="primary-btn" id="btn-login-youtube" style="text-decoration: none; display: inline-flex; align-items: center; gap: 8px; background-color: #ef4444; padding: 12px 24px; font-size: 15px;">
+                <span>▶️</span> Continue with Google (for YouTube)
+              </a>
+            </div>
+            <div style="border-top: 1px solid var(--border-color); padding-top: 10px; margin-top: 16px;">
+              <button class="link-btn" id="btn-reconfigure-yt-creds" style="font-size: 12px;">Edit Google OAuth Credentials</button>
+            </div>
+          </div>
+
+          <div id="yt-oauth-config-form">
+            <p class="helper-text" style="margin-bottom: 14px;">
+              Enter your Google Cloud Console OAuth 2.0 Client ID and Client Secret. Never shared publicly.
+            </p>
+            <div class="form-group">
+              <label for="yt-client-id">Google Client ID</label>
+              <input type="text" id="yt-client-id" placeholder="e.g. 123456789-abc.apps.googleusercontent.com" />
+            </div>
+            <div class="form-group">
+              <label for="yt-client-secret">Google Client Secret</label>
+              <input type="password" id="yt-client-secret" placeholder="Client Secret from Google Cloud Console" />
+            </div>
+            <div class="form-group">
+              <label>Authorized Redirect URI (Add to Google Cloud Console):</label>
+              <input type="text" id="yt-redirect-uri" value="http://localhost:8088/api/youtube/callback" readonly style="background: #f1f5f9; color: #475569;" />
+              <span class="form-hint">Paste into: APIs & Services → Credentials → OAuth 2.0 Client IDs → Authorized redirect URIs</span>
+            </div>
+            <div style="margin-top: 10px;">
+              <button class="primary-btn sm" id="btn-save-yt-creds">Save Credentials & Proceed to Login</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="yt-manual-section" class="hidden">
+          <p class="helper-text" style="margin-bottom: 14px;">
+            Or connect directly with a YouTube Channel ID and OAuth Access Token (e.g. from Google OAuth 2.0 Playground).
+          </p>
+          <div class="form-group">
+            <label for="yt-input-channel-name">Channel Name / Title</label>
+            <input type="text" id="yt-input-channel-name" placeholder="e.g. Gokul Tech Channel" />
+          </div>
+          <div class="form-group">
+            <label for="yt-input-channel-id">YouTube Channel ID</label>
+            <input type="text" id="yt-input-channel-id" placeholder="e.g. UC_x5XG1OV2P6uZZ5FSM9Ttw" />
+          </div>
+          <div class="form-group">
+            <label for="yt-input-token">Access Token</label>
+            <input type="password" id="yt-input-token" placeholder="Bearer access token (ya29...)" />
+            <span class="form-hint">Requires scope: https://www.googleapis.com/auth/youtube.force-ssl</span>
+          </div>
+          <div class="form-group">
+            <label for="yt-input-refresh-token">Refresh Token (Optional)</label>
+            <input type="password" id="yt-input-refresh-token" placeholder="Refresh token for automatic renewal" />
+          </div>
+          <div style="margin-top: 10px;">
+            <button class="primary-btn sm" id="btn-save-youtube-manual">Save YouTube Channel Token</button>
+          </div>
+        </div>
+
+        <div id="yt-connect-msg" class="form-msg hidden" style="margin-top: 14px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="secondary-btn" id="btn-cancel-yt-modal">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- YouTube Channel Selection Modal -->
+  <div id="yt-select-channel-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Select YouTube Channel</h3>
+        <button class="close-btn" id="btn-close-yt-select-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="helper-text" style="margin-bottom: 14px;">
+          Select which authorized YouTube channel you want Gokul Social Publisher to monitor for automatic replies.
+        </p>
+        <div class="form-group">
+          <label for="yt-channels-dropdown">Available Channels</label>
+          <select id="yt-channels-dropdown" style="padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); font-size: 13px; width: 100%;">
+            <option value="">Loading channels...</option>
+          </select>
+        </div>
+        <div id="yt-select-channel-msg" class="form-msg hidden" style="margin-top: 12px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="secondary-btn" id="btn-cancel-yt-select-modal">Cancel</button>
+        <button class="primary-btn" id="btn-confirm-select-yt-channel">Connect Channel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js?v=2.2"></script>
+</body>
+</html>
