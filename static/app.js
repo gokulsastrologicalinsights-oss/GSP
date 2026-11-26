@@ -942,6 +942,7 @@ function initApp() {
   loadFacebookStatus();
   loadInstagramStatus();
   loadYouTubeStatus();
+  checkAccountHealth();
   handleURLParams();
 }
 
@@ -2717,4 +2718,46 @@ document.addEventListener('DOMContentLoaded', () => {
   if (platformFilterEl) platformFilterEl.addEventListener("change", loadScheduledPosts);
   const statusFilterEl = document.getElementById("scheduler-status-filter");
   if (statusFilterEl) statusFilterEl.addEventListener("change", loadScheduledPosts);
+
+  async function checkAccountHealth(platform = null) {
+    const url = platform ? `/api/accounts/health?platform=${encodeURIComponent(platform)}` : '/api/accounts/health';
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const data = await res.json();
+      const accounts = data.accounts || {};
+      const prefixMap = { facebook: 'fb', instagram: 'ig', youtube: 'yt' };
+      Object.entries(accounts).forEach(([plat, info]) => {
+        const p = prefixMap[plat];
+        if (!p || !info) return;
+        const setEl = (id, val) => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = val;
+        };
+        setEl(`${p}-health-conn`, info.account_connection || 'Unknown');
+        setEl(`${p}-health-auth`, info.authorization || 'Unknown');
+        setEl(`${p}-health-ready`, info.publishing_readiness || 'Not Verified');
+        setEl(`${p}-health-checked`, info.last_checked ? info.last_checked.replace('T', ' ') : '—');
+        if (plat === 'youtube') {
+          const refBtn = document.getElementById('yt-btn-refresh-auth');
+          if (refBtn) refBtn.classList.toggle('hidden', !info.can_refresh);
+        }
+      });
+    } catch (err) {
+      console.error('Account health check failed:', err);
+    }
+  }
+
+  document.getElementById('btn-check-all-connections')?.addEventListener('click', () => checkAccountHealth());
+  document.getElementById('fb-btn-check-health')?.addEventListener('click', () => checkAccountHealth('facebook'));
+  document.getElementById('ig-btn-check-health')?.addEventListener('click', () => checkAccountHealth('instagram'));
+  document.getElementById('yt-btn-check-health')?.addEventListener('click', () => checkAccountHealth('youtube'));
+  document.getElementById('yt-btn-refresh-auth')?.addEventListener('click', async () => {
+    try {
+      const res = await fetch('/api/accounts/health/refresh?platform=youtube', { method: 'POST' });
+      if (res.ok) await checkAccountHealth('youtube');
+    } catch (err) {
+      console.error('YouTube authorization refresh failed:', err);
+    }
+  });
 })();

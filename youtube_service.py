@@ -194,11 +194,14 @@ class YouTubeService:
         refresh_token: Optional[str] = None,
         uploads_playlist_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Saves or updates a YouTube channel securely in SQLite accounts table."""
+        """Saves or updates a YouTube channel securely in SQLite accounts table, preserving existing refresh_token."""
+        existing = YouTubeService.get_account_token_data(account_id) or {}
+        effective_refresh = refresh_token if refresh_token else (existing.get("refresh_token") or "")
+        effective_uploads = uploads_playlist_id if uploads_playlist_id else (existing.get("uploads_playlist_id") or "")
         token_payload = {
             "access_token": access_token,
-            "refresh_token": refresh_token or "",
-            "uploads_playlist_id": uploads_playlist_id or "",
+            "refresh_token": effective_refresh,
+            "uploads_playlist_id": effective_uploads,
         }
         stored_token = json.dumps(token_payload)
 

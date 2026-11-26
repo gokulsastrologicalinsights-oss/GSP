@@ -159,3 +159,55 @@ def test_youtube_disconnect():
 
     status_after = client.get("/api/youtube/status").json()
     assert status_after["connected"] is False
+
+
+def test_youtube_connect_preserves_existing_refresh_token_when_omitted():
+    YouTubeService.connect_account(
+        account_id="UC_gokul_channel_123",
+        account_name="Gokul Tech Channel",
+        access_token="access_1",
+        refresh_token="refresh_keep_me",
+        uploads_playlist_id="UU_123",
+    )
+    # Reconnect without refresh_token (e.g. Google omitted it on re-consent)
+    YouTubeService.connect_account(
+        account_id="UC_gokul_channel_123",
+        account_name="Gokul Tech Channel",
+        access_token="access_2",
+        refresh_token="",
+    )
+    stored = YouTubeService.get_account_token_data("UC_gokul_channel_123")
+    assert stored["access_token"] == "access_2"
+    assert stored["refresh_token"] == "refresh_keep_me"
+    assert stored["uploads_playlist_id"] == "UU_123"
+
+
+def test_youtube_oauth_callback_csrf_state_mismatch_and_failure():
+    import database
+    database.set_setting("yt_oauth_csrf_state", "expected_state_abc")
+
+    bad_state_res = client.get("/api/youtube/callback?code=some_code&state=wrong_state", follow_redirects=False)
+    assert bad_state_res.status_code in (302, 307)
+    assert "Invalid+OAuth+state" in bad_state_res.headers["location"]
+
+    with patch("youtube_service.YouTubeService.exchange_code_for_token", return_value={"error": {"message": "bad_code"}}):
+        fail_res = client.get("/api/youtube/callback?code=bad_code&state=expected_state_abc", follow_redirects=False)
+        assert fail_res.status_code in (302, 307)
+        assert "bad_code" in fail_res.headers["location"]
+
+
+def test_youtube_oauth_callback_without_refresh_token_succeeds():
+    import database
+    database.set_setting("yt_oauth_csrf_state", "state_no_ref")
+    YouTubeService.save_credentials("google_client_123.apps.googleusercontent.com", "super_secret_google_key")
+
+    mock_token_res = MagicMock()
+    mock_token_res.json.return_value = {"access_token": "ya29.only_access", "expires_in": 3600}
+    mock_channel_res = MagicMock()
+    mock_channel_res.json.return_value = {
+        "items": [{"id": "UC_no_ref", "snippet": {"title": "NoRef Channel"}, "contentDetails": {"relatedPlaylists": {"uploads": "UU_no_ref"}}}]
+    }
+    with patch("requests.post", return_value=mock_token_res), patch("requests.get", return_value=mock_channel_res):
+        cb_res = client.get("/api/youtube/callback?code=ok_code&state=state_no_ref", follow_redirects=False)
+    assert cb_res.status_code in (302, 307)
+    assert "yt_session=yt_" in cb_res.headers["location"]

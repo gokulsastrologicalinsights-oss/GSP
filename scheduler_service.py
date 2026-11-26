@@ -116,6 +116,21 @@ class PlatformAdapter:
     platform: str = ""
     label: str = ""
 
+    @staticmethod
+    def _parse_json_response(resp) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Safely parse a Graph API response without raising JSONDecodeError on empty/non-JSON bodies."""
+        body = (getattr(resp, "text", None) or "").strip()
+        if not body:
+            return None, f"Empty response body (HTTP {resp.status_code})"
+        try:
+            data = resp.json()
+            if isinstance(data, dict):
+                return data, None
+            return None, f"Unexpected JSON type {type(data).__name__} (HTTP {resp.status_code})"
+        except Exception:
+            ctype = (getattr(resp, "headers", None) or {}).get("Content-Type", "unknown")
+            return None, f"Non-JSON response (HTTP {resp.status_code}, Content-Type={ctype}, len={len(body)})"
+
     def publish(self, post: Dict[str, Any], safe_mode: bool = True) -> Dict[str, Any]:
         if safe_mode:
             ext_id = f"safe_{self.platform}_{post['id']}"
@@ -140,7 +155,22 @@ class FacebookPageAdapter(PlatformAdapter):
     label = "Facebook Page"
     GRAPH_VIDEO_BASE = "https://graph-video.facebook.com/v27.0"
     CHUNK_SIZE = 10 * 1024 * 1024  # 10 MB chunks for large-file resumable upload
-    LARGE_FILE_THRESHOLD = 1024 * 1024 * 1024  # 1 GB
+    LARGE_FILE_THRESHOLD = 25 * 1024 * 1024  # 25 MB threshold to avoid HTTP 413 on multipart uploads
+
+    @staticmethod
+    def _parse_json_response(resp) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Safely parse a Graph API response without raising JSONDecodeError on empty/non-JSON bodies."""
+        body = (getattr(resp, "text", None) or "").strip()
+        if not body:
+            return None, f"Empty response body (HTTP {resp.status_code})"
+        try:
+            data = resp.json()
+            if isinstance(data, dict):
+                return data, None
+            return None, f"Unexpected JSON type {type(data).__name__} (HTTP {resp.status_code})"
+        except Exception:
+            ctype = (getattr(resp, "headers", None) or {}).get("Content-Type", "unknown")
+            return None, f"Non-JSON response (HTTP {resp.status_code}, Content-Type={ctype}, len={len(body)})"
 
     def publish(self, post: Dict[str, Any], safe_mode: bool = True) -> Dict[str, Any]:
         # Explicit production publishing guard: never make real API calls when Safe Testing Mode is ON
@@ -191,11 +221,12 @@ class FacebookPageAdapter(PlatformAdapter):
                     data={"upload_phase": "start", "file_size": file_size, "access_token": access_token},
                     timeout=60,
                 )
-                start_data = start_resp.json()
-                if start_resp.status_code >= 400 or "error" in start_data:
-                    err_msg = start_data.get("error", {}).get("message", start_resp.text)
+                start_data, parse_err = self._parse_json_response(start_resp)
+                if start_resp.status_code >= 400 or not start_data or "error" in start_data:
+                    err_msg = (start_data or {}).get("error", {}).get("message") or parse_err or f"HTTP {start_resp.status_code}"
                     return {"success": False, "status": "failed", "external_post_id": None, "permalink": None, "error": f"Facebook upload start failed: {err_msg}"}
                 session_id = start_data["upload_session_id"]
+                video_id_from_start = str(start_data.get("video_id") or "")
                 start_offset = int(start_data.get("start_offset", 0))
                 end_offset = int(start_data.get("end_offset", 0))
                 with open(media_path, "rb") as f:
@@ -210,37 +241,49 @@ class FacebookPageAdapter(PlatformAdapter):
                             files={"video_file_chunk": chunk},
                             timeout=120,
                         )
-                        t_data = t_resp.json()
-                        if t_resp.status_code >= 400 or "error" in t_data:
-                            err_msg = t_data.get("error", {}).get("message", t_resp.text)
+                        t_data, parse_err = self._parse_json_response(t_resp)
+                        if t_resp.status_code >= 400 or not t_data or "error" in t_data:
+                            err_msg = (t_data or {}).get("error", {}).get("message") or parse_err or f"HTTP {t_resp.status_code}"
                             return {"success": False, "status": "failed", "external_post_id": None, "permalink": None, "error": f"Facebook chunk transfer failed: {err_msg}"}
                         start_offset = int(t_data.get("start_offset", file_size))
                         end_offset = int(t_data.get("end_offset", file_size))
-                fin_resp = requests.post(
-                    upload_url,
-                    data={"upload_phase": "finish", "upload_session_id": session_id, "description": description, "access_token": access_token},
-                    timeout=60,
-                )
-                resp_data = fin_resp.json()
+                fin_data = {"upload_phase": "finish", "upload_session_id": session_id, "description": description, "access_token": access_token}
+                if post.get("title"):
+                    fin_data["title"] = post["title"]
+                fin_resp = requests.post(upload_url, data=fin_data, timeout=60)
+                resp_data, parse_err = self._parse_json_response(fin_resp)
                 status_code = fin_resp.status_code
                 resp_text = fin_resp.text
             else:
+                video_id_from_start = ""
+                mp_data = {"description": description, "access_token": access_token}
+                if post.get("title"):
+                    mp_data["title"] = post["title"]
                 with open(media_path, "rb") as f:
                     resp = requests.post(
                         upload_url,
-                        data={"description": description, "access_token": access_token},
+                        data=mp_data,
                         files={"source": (os.path.basename(media_path), f, "video/mp4")},
                         timeout=120,
                     )
-                resp_data = resp.json()
+                resp_data, parse_err = self._parse_json_response(resp)
                 status_code = resp.status_code
                 resp_text = resp.text
 
-            if status_code >= 400 or "error" in resp_data:
-                err_msg = resp_data.get("error", {}).get("message", resp_text)
+            if status_code >= 400 or (resp_data and "error" in resp_data):
+                err_msg = (resp_data or {}).get("error", {}).get("message") or parse_err or f"HTTP {status_code}"
                 return {"success": False, "status": "failed", "external_post_id": None, "permalink": None, "error": f"Facebook API error: {err_msg}"}
 
-            ext_id = str(resp_data.get("id") or "")
+            if not resp_data:
+                return {
+                    "success": False,
+                    "status": "failed",
+                    "external_post_id": None,
+                    "permalink": None,
+                    "error": f"Facebook upload outcome uncertain: {parse_err}",
+                }
+
+            ext_id = str(resp_data.get("id") or video_id_from_start or "")
             permalink = f"https://www.facebook.com/{page_id}/videos/{ext_id}/" if ext_id else None
             return {
                 "success": True,
@@ -263,6 +306,23 @@ class InstagramProfessionalAdapter(PlatformAdapter):
     platform = "instagram"
     label = "Instagram Professional"
     GRAPH_API_BASE = "https://graph.facebook.com/v27.0"
+    POLL_INTERVAL_SECONDS = 5
+    POLL_TIMEOUT_SECONDS = 180
+
+    @staticmethod
+    def _parse_json_response(resp) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Safely parse a Graph API response without raising JSONDecodeError on empty/non-JSON bodies."""
+        body = (getattr(resp, "text", None) or "").strip()
+        if not body:
+            return None, f"Empty response body (HTTP {resp.status_code})"
+        try:
+            data = resp.json()
+            if isinstance(data, dict):
+                return data, None
+            return None, f"Unexpected JSON type {type(data).__name__} (HTTP {resp.status_code})"
+        except Exception:
+            ctype = (getattr(resp, "headers", None) or {}).get("Content-Type", "unknown")
+            return None, f"Non-JSON response (HTTP {resp.status_code}, Content-Type={ctype}, len={len(body)})"
 
     def publish(self, post: Dict[str, Any], safe_mode: bool = True) -> Dict[str, Any]:
         # Explicit production publishing guard: never make real API calls when Safe Testing Mode is ON
@@ -314,52 +374,96 @@ class InstagramProfessionalAdapter(PlatformAdapter):
                 "error": "No active Instagram Professional account or access token connected",
             }
 
-        video_url = post.get("public_media_url") or ""
-        if not video_url.startswith(("http://", "https://")):
-            return {
-                "success": False,
-                "status": "failed",
-                "external_post_id": None,
-                "permalink": None,
-                "error": "Instagram Reels requires a publicly accessible video_url; direct local-file upload is not supported without a public media URL",
-            }
+        import temp_media_service
+        temp_token = None
+        video_url = (post.get("public_media_url") or "").strip()
+        if not video_url:
+            base_url = (os.environ.get("GSP_PUBLIC_MEDIA_BASE_URL") or database.get_settings().get("public_media_base_url") or "").strip().rstrip("/")
+            lower_base = base_url.lower()
+            if not base_url or not lower_base.startswith("https://") or any(h in lower_base for h in ("localhost", "127.0.0.1", "::1")):
+                return {
+                    "success": False,
+                    "status": "failed",
+                    "external_post_id": None,
+                    "permalink": None,
+                    "error": "Instagram Reels requires a publicly accessible video_url via HTTPS GSP_PUBLIC_MEDIA_BASE_URL (non-localhost) or public_media_url",
+                }
+            try:
+                temp_token = temp_media_service.create_temp_media_token(
+                    job_id=int(post.get("id") or 0),
+                    media_path=media_path,
+                )
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "status": "failed",
+                    "external_post_id": None,
+                    "permalink": None,
+                    "error": f"Temporary media token creation failed: {exc}",
+                }
+            video_url = f"{base_url}/api/media/temp/{temp_token}"
 
         caption = (post.get("caption") or "").strip()
         hashtags = (post.get("hashtags") or "").strip()
         full_caption = f"{caption}\n\n{hashtags}".strip() if hashtags else caption
 
         import requests
+        import time
         try:
-            # 1. Create Reels container
-            c_resp = requests.post(
-                f"{self.GRAPH_API_BASE}/{ig_user_id}/media",
-                data={
-                    "media_type": "REELS",
-                    "video_url": video_url,
-                    "caption": full_caption,
-                    "access_token": access_token,
-                },
-                timeout=60,
-            )
-            c_data = c_resp.json()
-            if c_resp.status_code >= 400 or "error" in c_data or "id" not in c_data:
-                err_msg = c_data.get("error", {}).get("message", c_resp.text)
-                return {"success": False, "status": "failed", "external_post_id": None, "permalink": None, "error": f"Instagram container creation failed: {err_msg}"}
-            container_id = str(c_data["id"])
-
-            # 2. Poll container status
-            for _ in range(10):
-                s_resp = requests.get(
-                    f"{self.GRAPH_API_BASE}/{container_id}",
-                    params={"fields": "status_code,status", "access_token": access_token},
-                    timeout=30,
+            # 1. Reuse existing container_id if present (prevent duplicate container creation)
+            container_id = str(post.get("external_post_id") or "").strip()
+            if not container_id:
+                c_resp = requests.post(
+                    f"{self.GRAPH_API_BASE}/{ig_user_id}/media",
+                    data={
+                        "media_type": "REELS",
+                        "video_url": video_url,
+                        "caption": full_caption,
+                        "access_token": access_token,
+                    },
+                    timeout=60,
                 )
-                s_data = s_resp.json()
-                status_code = s_data.get("status_code")
-                if status_code == "FINISHED":
+                c_data, c_err = self._parse_json_response(c_resp)
+                if c_resp.status_code >= 400 or not c_data or "error" in c_data or "id" not in c_data:
+                    temp_media_service.revoke_temp_media_token(temp_token)
+                    err_msg = (c_data or {}).get("error", {}).get("message") or c_err or c_resp.text
+                    return {"success": False, "status": "failed", "external_post_id": None, "permalink": None, "error": f"Instagram container creation failed: {err_msg}"}
+                container_id = str(c_data["id"])
+
+            # 2. Poll container status with bounded interval and timeout
+            container_finished = False
+            poll_start = time.monotonic()
+            poll_attempts = 0
+            while True:
+                poll_attempts += 1
+                try:
+                    s_resp = requests.get(
+                        f"{self.GRAPH_API_BASE}/{container_id}",
+                        params={"fields": "status_code,status", "access_token": access_token},
+                        timeout=30,
+                    )
+                    if s_resp.status_code == 429 or s_resp.status_code >= 500:
+                        if time.monotonic() - poll_start >= self.POLL_TIMEOUT_SECONDS:
+                            break
+                        time.sleep(self.POLL_INTERVAL_SECONDS)
+                        continue
+                    s_data, _ = self._parse_json_response(s_resp)
+                    status_code = (s_data or {}).get("status_code")
+                    if status_code == "FINISHED":
+                        container_finished = True
+                        break
+                    if status_code in ("ERROR", "EXPIRED"):
+                        temp_media_service.revoke_temp_media_token(temp_token)
+                        return {"success": False, "status": "failed", "external_post_id": container_id, "permalink": None, "error": f"Instagram container processing failed: {(s_data or {}).get('status', status_code)}"}
+                except Exception:
+                    if time.monotonic() - poll_start >= self.POLL_TIMEOUT_SECONDS:
+                        break
+                if time.monotonic() - poll_start >= self.POLL_TIMEOUT_SECONDS:
                     break
-                if status_code in ("ERROR", "EXPIRED"):
-                    return {"success": False, "status": "failed", "external_post_id": container_id, "permalink": None, "error": f"Instagram container processing failed: {s_data.get('status', status_code)}"}
+                time.sleep(self.POLL_INTERVAL_SECONDS)
+
+            if not container_finished:
+                return {"success": False, "status": "failed", "external_post_id": container_id, "permalink": None, "error": f"Instagram container processing timed out before FINISHED (attempts={poll_attempts})"}
 
             # 3. Publish container
             p_resp = requests.post(
@@ -367,6 +471,7 @@ class InstagramProfessionalAdapter(PlatformAdapter):
                 data={"creation_id": container_id, "access_token": access_token},
                 timeout=60,
             )
+            temp_media_service.revoke_temp_media_token(temp_token)
             p_data = p_resp.json()
             if p_resp.status_code >= 400 or "error" in p_data or "id" not in p_data:
                 err_msg = p_data.get("error", {}).get("message", p_resp.text)
@@ -408,6 +513,21 @@ class YouTubeChannelAdapter(PlatformAdapter):
     label = "YouTube Channel"
     UPLOAD_INIT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
     CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB streaming chunks
+
+    @staticmethod
+    def _parse_json_response(resp) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Safely parse a Graph API response without raising JSONDecodeError on empty/non-JSON bodies."""
+        body = (getattr(resp, "text", None) or "").strip()
+        if not body:
+            return None, f"Empty response body (HTTP {resp.status_code})"
+        try:
+            data = resp.json()
+            if isinstance(data, dict):
+                return data, None
+            return None, f"Unexpected JSON type {type(data).__name__} (HTTP {resp.status_code})"
+        except Exception:
+            ctype = (getattr(resp, "headers", None) or {}).get("Content-Type", "unknown")
+            return None, f"Non-JSON response (HTTP {resp.status_code}, Content-Type={ctype}, len={len(body)})"
 
     def publish(self, post: Dict[str, Any], safe_mode: bool = True) -> Dict[str, Any]:
         # Explicit production publishing guard: never make real API calls when Safe Testing Mode is ON

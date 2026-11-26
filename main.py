@@ -655,6 +655,10 @@ def youtube_oauth_callback(
     if not code:
         return RedirectResponse("/?view=accounts&yt_error=Missing+authorization+code+from+Google")
 
+    expected_state = database.get_settings().get("yt_oauth_csrf_state")
+    if expected_state and state is not None and state != expected_state:
+        return RedirectResponse("/?view=accounts&yt_error=Invalid+OAuth+state+parameter")
+
     token_res = YouTubeService.exchange_code_for_token(code)
     if "error" in token_res:
         err_text = token_res["error"].get("message", "Token exchange failed.")
@@ -1408,6 +1412,182 @@ def cancel_scheduled_post_endpoint(post_id: int):
         code = 404 if "not found" in err.lower() else 400
         raise HTTPException(status_code=code, detail=err)
     return {"post": updated}
+
+
+def _check_platform_health(platform: str) -> dict:
+    """Safely verify OAuth and publishing readiness for a platform without publishing or exposing tokens."""
+    from datetime import datetime, timedelta
+    import requests
+
+    now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    conn = database.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT account_id, account_name, access_token, refresh_token, token_expires_at, is_active FROM accounts WHERE platform = ? AND is_active = 1 LIMIT 1",
+            (platform,),
+        ).fetchone()
+    except Exception:
+        row = conn.execute(
+            "SELECT account_id, account_name, access_token, is_active FROM accounts WHERE platform = ? AND is_active = 1 LIMIT 1",
+            (platform,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return {
+            "platform": platform,
+            "account_connection": "Disconnected",
+            "authorization": "Unknown",
+            "publishing_readiness": "Blocked",
+            "account_id": None,
+            "account_name": None,
+            "can_refresh": False,
+            "last_checked": now_iso,
+            "detail": "No active account connected.",
+        }
+
+    row_dict = dict(row)
+    account_id = row_dict.get("account_id")
+    account_name = row_dict.get("account_name")
+    access_token = row_dict.get("access_token") or ""
+    refresh_token = row_dict.get("refresh_token") or ""
+    if platform == "youtube" and account_id:
+        yt_tokens = YouTubeService.get_account_token_data(account_id) or {}
+        access_token = yt_tokens.get("access_token") or access_token
+        refresh_token = yt_tokens.get("refresh_token") or refresh_token
+    expires_at = row_dict.get("token_expires_at")
+    can_refresh = platform == "youtube" and bool(refresh_token)
+
+    if not access_token:
+        return {
+            "platform": platform,
+            "account_connection": "Connected",
+            "authorization": "Refresh Required" if can_refresh else "Expired",
+            "publishing_readiness": "Blocked",
+            "account_id": account_id,
+            "account_name": account_name,
+            "can_refresh": can_refresh,
+            "last_checked": now_iso,
+            "detail": "Access token missing.",
+        }
+
+    expiring_soon = False
+    if expires_at:
+        try:
+            exp_dt = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00").replace("+00:00", ""))
+            if exp_dt <= datetime.now():
+                return {
+                    "platform": platform,
+                    "account_connection": "Connected",
+                    "authorization": "Refresh Required" if can_refresh else "Expired",
+                    "publishing_readiness": "Blocked",
+                    "account_id": account_id,
+                    "account_name": account_name,
+                    "can_refresh": can_refresh,
+                    "last_checked": now_iso,
+                    "detail": "Access token expired.",
+                }
+            if exp_dt <= datetime.now() + timedelta(minutes=10):
+                expiring_soon = True
+        except Exception:
+            pass
+
+    try:
+        if platform == "facebook":
+            resp = requests.get(
+                "https://graph.facebook.com/v19.0/me",
+                params={"fields": "id,name", "access_token": access_token},
+                timeout=5,
+            )
+        elif platform == "instagram":
+            resp = requests.get(
+                f"https://graph.facebook.com/v19.0/{account_id}",
+                params={"fields": "id,username", "access_token": access_token},
+                timeout=5,
+            )
+        elif platform == "youtube":
+            resp = requests.get(
+                "https://www.googleapis.com/youtube/v3/channels",
+                params={"part": "id,snippet", "mine": "true"},
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=5,
+            )
+        else:
+            raise ValueError(f"Unsupported platform: {platform}")
+
+        if resp.status_code == 200:
+            auth_status = "Expiring Soon" if expiring_soon else "Valid"
+            return {
+                "platform": platform,
+                "account_connection": "Connected",
+                "authorization": auth_status,
+                "publishing_readiness": "Ready",
+                "account_id": account_id,
+                "account_name": account_name,
+                "can_refresh": can_refresh,
+                "last_checked": now_iso,
+                "detail": "Official API verification succeeded.",
+            }
+        if resp.status_code in (401, 403):
+            return {
+                "platform": platform,
+                "account_connection": "Connected",
+                "authorization": "Refresh Required" if can_refresh else "Expired",
+                "publishing_readiness": "Blocked",
+                "account_id": account_id,
+                "account_name": account_name,
+                "can_refresh": can_refresh,
+                "last_checked": now_iso,
+                "detail": f"Authorization rejected (HTTP {resp.status_code}).",
+            }
+        return {
+            "platform": platform,
+            "account_connection": "Connected",
+            "authorization": "Authorization Check Failed",
+            "publishing_readiness": "Not Verified",
+            "account_id": account_id,
+            "account_name": account_name,
+            "can_refresh": can_refresh,
+            "last_checked": now_iso,
+            "detail": f"Verification returned HTTP {resp.status_code}.",
+        }
+    except Exception as exc:
+        logger.warning("Health check failed for %s: %s", platform, type(exc).__name__)
+        return {
+            "platform": platform,
+            "account_connection": "Connected",
+            "authorization": "Authorization Check Failed",
+            "publishing_readiness": "Not Verified",
+            "account_id": account_id,
+            "account_name": account_name,
+            "can_refresh": can_refresh,
+            "last_checked": now_iso,
+            "detail": "Verification request failed.",
+        }
+
+
+@app.get("/api/accounts/health")
+def get_accounts_health(platform: Optional[str] = None):
+    """Consolidated OAuth and publishing readiness health check for Facebook, Instagram, and YouTube."""
+    targets = [platform] if platform in ("facebook", "instagram", "youtube") else ["facebook", "instagram", "youtube"]
+    results = {p: _check_platform_health(p) for p in targets}
+    return {"accounts": results}
+
+
+@app.post("/api/accounts/health/refresh")
+def refresh_account_authorization(platform: str):
+    """Safely refresh OAuth authorization where supported (YouTube with refresh token)."""
+    if platform != "youtube":
+        raise HTTPException(status_code=400, detail="Token refresh is only supported for YouTube.")
+    acc = YouTubeService.get_connected_account()
+    if not acc or not acc.get("account_id"):
+        raise HTTPException(status_code=404, detail="No connected YouTube account found.")
+    try:
+        YouTubeService.refresh_access_token(acc["account_id"])
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Token refresh failed: {type(exc).__name__}")
+    return {"account": _check_platform_health("youtube")}
 
 
 # Serve frontend

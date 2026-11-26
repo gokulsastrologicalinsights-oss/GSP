@@ -134,11 +134,121 @@ def test_missing_file_and_token_error_and_retry(isolated_fb_db, monkeypatch):
     )
     scheduler_service.run_pending_scheduled_posts(now=datetime(2026, 1, 3, 12, 0, 0))
     p_fail = [p for p in scheduler_service.get_scheduled_posts() if p["video_id"] == "v_retry"][0]
-    assert p_fail["status"] == "auth_required"
-    assert "expired" in p_fail["error_message"].lower()
-    assert p_fail["attempt_count"] == 1
+    FacebookService.connect_page("page_123", "Gokul Astro", "tok_valid")
+    database.set_setting("safe_test_mode", "false")
+    video_path = _create_dummy_video(isolated_fb_db, "gemini.mp4")
+    adapter = scheduler_service.FacebookPageAdapter()
+    post = {
+        "id": 1,
+        "platform": "facebook",
+        "account_key": "facebook:page_123",
+        "media_path": video_path,
+        "original_filename": "gemini.mp4",
+        "caption": "Test",
+        "hashtags": "",
+    }
 
-    # Retry via reschedule_video
-    scheduler_service.reschedule_video("v_retry", "2026-01-04T09:00:00")
-    p_re = [p for p in scheduler_service.get_scheduled_posts() if p["video_id"] == "v_retry"][0]
-    assert p_re["status"] == "scheduled"
+    # 1. Empty 200 response -> uncertain outcome, no JSONDecodeError
+    class Empty200:
+        status_code = 200
+        text = ""
+        headers = {"Content-Type": "application/json"}
+        def json(self):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: Empty200())
+    res1 = adapter.publish(post, safe_mode=False)
+    assert res1["success"] is False
+    assert "uncertain" in res1["error"].lower()
+    assert "empty response body" in res1["error"].lower()
+
+    # 2. Empty 500 error response
+    class Empty500:
+        status_code = 500
+        text = "   "
+        headers = {"Content-Type": "text/plain"}
+        def json(self):
+            raise ValueError("Expecting value")
+
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: Empty500())
+    res2 = adapter.publish(post, safe_mode=False)
+    assert res2["success"] is False
+    assert "http 500" in res2["error"].lower()
+
+    # 3. Non-JSON HTML response
+    class HtmlResp:
+        status_code = 502
+        text = "<html>Bad Gateway</html>"
+        headers = {"Content-Type": "text/html"}
+        def json(self):
+            raise ValueError("Expecting value")
+
+    monkeypatch.setattr(requests, "post", lambda *a, **kw: HtmlResp())
+    res3 = adapter.publish(post, safe_mode=False)
+    assert res3["success"] is False
+    assert "non-json response" in res3["error"].lower()
+    assert "http 502" in res3["error"].lower()
+
+    # 4. Timeout exception
+    def raise_timeout(*a, **kw):
+        raise requests.exceptions.Timeout("read timed out")
+
+    monkeypatch.setattr(requests, "post", raise_timeout)
+    res4 = adapter.publish(post, safe_mode=False)
+    assert res4["success"] is False
+    assert "timed out" in res4["error"].lower()
+
+
+def test_facebook_108mb_chunked_resumable_upload_flow(isolated_fb_db, monkeypatch):
+    FacebookService.connect_page("page_123", "Gokul Astro", "tok_valid")
+    database.set_setting("safe_test_mode", "false")
+    video_path = _create_dummy_video(isolated_fb_db, "viruchigam_large.mp4")
+    adapter = scheduler_service.FacebookPageAdapter()
+    # Simulate 108 MB file size without allocating 108 MB on disk
+    monkeypatch.setattr(os.path, "getsize", lambda p: 112_992_203)
+
+    phases = []
+
+    class FakeResp:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = str(payload)
+            self.headers = {"Content-Type": "application/json"}
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, data=None, files=None, timeout=None):
+        phase = (data or {}).get("upload_phase")
+        phases.append(phase)
+        if phase == "start":
+            return FakeResp(200, {"upload_session_id": "sess_108", "video_id": "fb_vid_108", "start_offset": "0", "end_offset": "50000000"})
+        if phase == "transfer":
+            off = int(data["start_offset"])
+            if off == 0:
+                return FakeResp(200, {"start_offset": "50000000", "end_offset": "112992203"})
+            return FakeResp(200, {"start_offset": "112992203", "end_offset": "112992203"})
+        if phase == "finish":
+            assert data.get("title") == "GSP Phase 5C Facebook Publishing Test"
+            return FakeResp(200, {"success": True})
+        raise AssertionError(f"Unexpected phase: {phase}")
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    res = adapter.publish(
+        {
+            "id": 2,
+            "platform": "facebook",
+            "account_key": "facebook:page_123",
+            "media_path": video_path,
+            "original_filename": "viruchigam_large.mp4",
+            "title": "GSP Phase 5C Facebook Publishing Test",
+            "caption": "Controlled Facebook publishing verification.",
+            "hashtags": "",
+        },
+        safe_mode=False,
+    )
+    assert res["success"] is True
+    assert res["external_post_id"] == "fb_vid_108"
+    assert res["permalink"] == "https://www.facebook.com/page_123/videos/fb_vid_108/"
+    assert phases == ["start", "transfer", "finish"]

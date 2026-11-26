@@ -123,6 +123,7 @@
           <div class="panel-header">
             <h3>Connected Social Platforms</h3>
             <span class="helper-text">Platforms are configured one-by-one with official OAuth credentials.</span>
+            <button class="secondary-btn sm" id="btn-check-all-connections" style="margin-left:auto;">Check All Connections</button>
           </div>
 
           <div class="platform-cards-grid">
@@ -134,8 +135,17 @@
               </div>
               <h4 id="fb-page-title">Facebook Pages</h4>
               <p id="fb-page-desc">Detect and reply to comments on your official Facebook page posts.</p>
+              <div class="health-status-box" id="fb-health-box" style="font-size:0.8rem;margin:8px 0;padding:8px;border-radius:6px;background:rgba(255,255,255,0.04);">
+                <div>Connection: <strong id="fb-health-conn">Not Verified</strong></div>
+                <div>Authorization: <strong id="fb-health-auth">Not Verified</strong></div>
+                <div>Readiness: <strong id="fb-health-ready">Not Verified</strong></div>
+                <div style="opacity:0.7;font-size:0.75rem;">Last checked: <span id="fb-health-checked">—</span></div>
+              </div>
               <div class="platform-action" id="fb-action-area">
                 <button class="primary-btn sm" id="btn-connect-facebook">Connect Facebook</button>
+              </div>
+              <div style="margin-top:6px;">
+                <button class="secondary-btn sm" id="fb-btn-check-health">Check Connection</button>
               </div>
             </div>
 
@@ -147,8 +157,17 @@
               </div>
               <h4 id="ig-account-title">Instagram Professional</h4>
               <p id="ig-account-desc">Automatic replies for comments on Instagram reels and posts.</p>
+              <div class="health-status-box" id="ig-health-box" style="font-size:0.8rem;margin:8px 0;padding:8px;border-radius:6px;background:rgba(255,255,255,0.04);">
+                <div>Connection: <strong id="ig-health-conn">Not Verified</strong></div>
+                <div>Authorization: <strong id="ig-health-auth">Not Verified</strong></div>
+                <div>Readiness: <strong id="ig-health-ready">Not Verified</strong></div>
+                <div style="opacity:0.7;font-size:0.75rem;">Last checked: <span id="ig-health-checked">—</span></div>
+              </div>
               <div class="platform-action" id="ig-action-area">
                 <button class="primary-btn sm" id="btn-connect-instagram">Connect Instagram</button>
+              </div>
+              <div style="margin-top:6px;">
+                <button class="secondary-btn sm" id="ig-btn-check-health">Check Connection</button>
               </div>
             </div>
 
@@ -160,8 +179,18 @@
               </div>
               <h4 id="yt-channel-title">YouTube Channel</h4>
               <p id="yt-channel-desc">Automatic replies for viewers on video comments.</p>
+              <div class="health-status-box" id="yt-health-box" style="font-size:0.8rem;margin:8px 0;padding:8px;border-radius:6px;background:rgba(255,255,255,0.04);">
+                <div>Connection: <strong id="yt-health-conn">Not Verified</strong></div>
+                <div>Authorization: <strong id="yt-health-auth">Not Verified</strong></div>
+                <div>Readiness: <strong id="yt-health-ready">Not Verified</strong></div>
+                <div style="opacity:0.7;font-size:0.75rem;">Last checked: <span id="yt-health-checked">—</span></div>
+              </div>
               <div class="platform-action" id="yt-action-area">
                 <button class="primary-btn sm" id="btn-connect-youtube">Connect YouTube</button>
+              </div>
+              <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="secondary-btn sm" id="yt-btn-check-health">Check Connection</button>
+                <button class="secondary-btn sm hidden" id="yt-btn-refresh-auth">Refresh Authorization</button>
               </div>
             </div>
           </div>
