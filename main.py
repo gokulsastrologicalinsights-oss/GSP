@@ -1026,6 +1026,149 @@ def get_dashboard_summary_endpoint():
     return database.get_dashboard_summary()
 
 
+# ==============================================================================
+# Smart Lead Management Endpoints (GSP V2.0 - Phase 2.0A)
+# ==============================================================================
+
+class LeadCreateRequest(BaseModel):
+    business_type: str
+    platform: str
+    account_id: str
+    source_comment_id: str
+    customer_name: Optional[str] = None
+    customer_username: Optional[str] = None
+    customer_contact: Optional[str] = None
+    enquiry_category: str
+    original_message: str
+    detected_language: Optional[str] = None
+    lead_status: str = "New"
+    priority: str = "Medium"
+    internal_notes: Optional[str] = None
+    next_follow_up_at: Optional[str] = None
+
+
+class LeadUpdateRequest(BaseModel):
+    business_type: Optional[str] = None
+    lead_status: Optional[str] = None
+    priority: Optional[str] = None
+    internal_notes: Optional[str] = None
+    customer_contact: Optional[str] = None
+    next_follow_up_at: Optional[str] = None
+    last_contacted_at: Optional[str] = None
+    converted_at: Optional[str] = None
+    enquiry_category: Optional[str] = None
+    follow_up_completed: Optional[bool] = None
+
+
+def _validate_lead_create(req: LeadCreateRequest) -> None:
+    if req.business_type not in database.VALID_BUSINESS_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid business_type. Must be one of: {database.VALID_BUSINESS_TYPES}")
+    if req.platform.lower() not in database.VALID_LEAD_PLATFORMS:
+        raise HTTPException(status_code=400, detail=f"Invalid platform. Must be one of: {database.VALID_LEAD_PLATFORMS}")
+    if not req.account_id or not req.account_id.strip():
+        raise HTTPException(status_code=400, detail="account_id is required")
+    if not req.source_comment_id or not req.source_comment_id.strip():
+        raise HTTPException(status_code=400, detail="source_comment_id is required")
+    if not req.original_message or not req.original_message.strip():
+        raise HTTPException(status_code=400, detail="original_message is required")
+    if req.enquiry_category not in database.VALID_ENQUIRY_CATEGORIES:
+        raise HTTPException(status_code=400, detail=f"Invalid enquiry_category. Must be one of: {database.VALID_ENQUIRY_CATEGORIES}")
+    if req.lead_status not in database.VALID_LEAD_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Invalid lead_status. Must be one of: {database.VALID_LEAD_STATUSES}")
+    if req.priority not in database.VALID_LEAD_PRIORITIES:
+        raise HTTPException(status_code=400, detail=f"Invalid priority. Must be one of: {database.VALID_LEAD_PRIORITIES}")
+
+
+@app.get("/api/leads/summary")
+def get_leads_summary_endpoint(business_type: Optional[str] = None):
+    """Retrieve lead count summary, optionally filtered by business_type."""
+    if business_type and business_type not in database.VALID_BUSINESS_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid business_type")
+    return database.get_leads_summary(business_type=business_type)
+
+
+@app.get("/api/leads")
+def list_leads_endpoint(
+    business_type: Optional[str] = None,
+    platform: Optional[str] = None,
+    lead_status: Optional[str] = None,
+    enquiry_category: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """List leads with optional business, platform, status, and category filters."""
+    if business_type and business_type not in database.VALID_BUSINESS_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid business_type")
+    if platform and platform.lower() not in database.VALID_LEAD_PLATFORMS:
+        raise HTTPException(status_code=400, detail="Invalid platform")
+    if lead_status and lead_status not in database.VALID_LEAD_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid lead_status")
+    if enquiry_category and enquiry_category not in database.VALID_ENQUIRY_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Invalid enquiry_category")
+    leads = database.get_leads(
+        business_type=business_type,
+        platform=platform,
+        lead_status=lead_status,
+        enquiry_category=enquiry_category,
+        limit=limit,
+        offset=offset,
+    )
+    return {"leads": leads, "count": len(leads)}
+
+
+@app.get("/api/leads/{lead_id}")
+def get_lead_endpoint(lead_id: int, business_type: Optional[str] = None):
+    """Retrieve a single lead by ID, enforcing business_type isolation when provided."""
+    if business_type and business_type not in database.VALID_BUSINESS_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid business_type")
+    lead = database.get_lead_by_id(lead_id, business_type=business_type)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return lead
+
+
+@app.post("/api/leads", status_code=201)
+def create_lead_endpoint(req: LeadCreateRequest):
+    """Create a new lead with validation and duplicate prevention."""
+    _validate_lead_create(req)
+    lead, err = database.create_lead(req.model_dump())
+    if err == "duplicate":
+        raise HTTPException(status_code=409, detail="Duplicate lead for this platform, account_id, and source_comment_id")
+    if not lead:
+        raise HTTPException(status_code=500, detail="Failed to create lead")
+    return lead
+
+
+@app.put("/api/leads/{lead_id}")
+def update_lead_endpoint(lead_id: int, req: LeadUpdateRequest):
+    """Update lead status, priority, notes, contact, or follow-up details."""
+    if req.business_type and req.business_type not in database.VALID_BUSINESS_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid business_type")
+    if req.lead_status and req.lead_status not in database.VALID_LEAD_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid lead_status")
+    if req.priority and req.priority not in database.VALID_LEAD_PRIORITIES:
+        raise HTTPException(status_code=400, detail="Invalid priority")
+    if req.enquiry_category and req.enquiry_category not in database.VALID_ENQUIRY_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Invalid enquiry_category")
+
+    updates = {k: v for k, v in req.model_dump().items() if k != "business_type" and v is not None}
+    updated = database.update_lead(lead_id, updates, business_type=req.business_type)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return updated
+
+
+@app.get("/api/leads/{lead_id}/history")
+def get_lead_history_endpoint(lead_id: int, business_type: Optional[str] = None):
+    """Retrieve immutable activity history for a lead."""
+    if business_type and business_type not in database.VALID_BUSINESS_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid business_type")
+    history = database.get_lead_history(lead_id, business_type=business_type)
+    if history is None:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    return {"lead_id": lead_id, "history": history}
+
+
 # Serve frontend
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 

@@ -30,9 +30,13 @@ function switchTab(tabId) {
     dashboard: 'Dashboard',
     accounts: 'Connected Accounts',
     autoreply: 'Auto Reply Configuration',
-    activity: 'Activity Log'
+    activity: 'Activity Log',
+    leads: 'Lead Management'
   };
   document.getElementById('page-title').textContent = titles[tabId] || 'Dashboard';
+  if (tabId === 'leads' && typeof loadLeads === 'function') {
+    loadLeads();
+  }
 }
 
 // Fetch System Status
@@ -2789,3 +2793,72 @@ if (document.readyState === 'loading') {
   initApp();
   initApprovalQueue();
 }
+
+// ==============================================================================
+// Smart Lead Management (GSP V2.0 Phase 2.0A)
+// ==============================================================================
+async function loadLeads() {
+  const business = document.getElementById('lead-filter-business')?.value || '';
+  const status = document.getElementById('lead-filter-status')?.value || '';
+  const platform = document.getElementById('lead-filter-platform')?.value || '';
+  const category = document.getElementById('lead-filter-category')?.value || '';
+
+  const params = new URLSearchParams();
+  if (business) params.set('business_type', business);
+  if (status) params.set('lead_status', status);
+  if (platform) params.set('platform', platform);
+  if (category) params.set('enquiry_category', category);
+
+  try {
+    const [summaryRes, listRes] = await Promise.all([
+      fetch('/api/leads/summary' + (business ? `?business_type=${encodeURIComponent(business)}` : '')),
+      fetch('/api/leads?' + params.toString()),
+    ]);
+
+    if (summaryRes.ok) {
+      const summary = await summaryRes.json();
+      const elTotal = document.getElementById('leads-total-count');
+      const elAstro = document.getElementById('leads-astrology-count');
+      const elVivaham = document.getElementById('leads-vivaham-count');
+      const elNew = document.getElementById('leads-new-count');
+      if (elTotal) elTotal.textContent = summary.total ?? 0;
+      if (elAstro) elAstro.textContent = summary.by_business?.Astrology ?? 0;
+      if (elVivaham) elVivaham.textContent = summary.by_business?.Vivaham ?? 0;
+      if (elNew) elNew.textContent = summary.by_status?.New ?? 0;
+    }
+
+    if (listRes.ok) {
+      const data = await listRes.json();
+      const tbody = document.getElementById('leads-table-body');
+      if (!tbody) return;
+      const leads = data.leads || [];
+      if (leads.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 24px; color: var(--text-muted);">No leads found.</td></tr>';
+        return;
+      }
+      const esc = typeof escapeHtml === 'function' ? escapeHtml : (s) => String(s ?? '');
+      tbody.innerHTML = leads.map(lead => `
+        <tr>
+          <td>${esc(lead.business_type)}</td>
+          <td>${esc(lead.platform)}</td>
+          <td>${esc(lead.customer_name || lead.customer_username || 'Unknown')}</td>
+          <td>${esc(lead.enquiry_category)}</td>
+          <td>${esc(lead.lead_status)}</td>
+          <td>${esc(lead.priority)}</td>
+          <td>${esc(lead.original_message)}</td>
+        </tr>
+      `).join('');
+    }
+  } catch (err) {
+    console.error('Failed to load leads:', err);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  ['lead-filter-business', 'lead-filter-status', 'lead-filter-platform', 'lead-filter-category'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', loadLeads);
+  });
+  const refreshBtn = document.getElementById('btn-refresh-leads');
+  if (refreshBtn) refreshBtn.addEventListener('click', loadLeads);
+});

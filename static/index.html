@@ -32,6 +32,10 @@
           <span class="icon">📋</span>
           <span>Activity</span>
         </button>
+        <button class="nav-item" data-tab="leads">
+          <span class="icon">🎯</span>
+          <span>Lead Management</span>
+        </button>
       </nav>
 
       <div class="sidebar-status">
@@ -387,6 +391,104 @@
               <tbody id="activity-table-body">
                 <tr>
                   <td colspan="7" class="empty-state">No activity logged yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <!-- Lead Management View (GSP V2.0 Phase 2.0A) -->
+      <section id="view-leads" class="tab-view">
+        <div class="stats-grid" id="leads-summary-grid" style="margin-bottom: 20px;">
+          <div class="stat-card">
+            <div class="stat-label">Total Leads</div>
+            <div class="stat-value" id="leads-total-count">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Astrology</div>
+            <div class="stat-value" id="leads-astrology-count">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Vivaham</div>
+            <div class="stat-value" id="leads-vivaham-count">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">New</div>
+            <div class="stat-value" id="leads-new-count">0</div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom: 20px;">
+          <div class="card-header">
+            <h3>Filter Leads</h3>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; padding: 16px;">
+            <div class="form-group">
+              <label for="lead-filter-business">Business</label>
+              <select id="lead-filter-business" style="padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); width: 100%;">
+                <option value="">All Businesses</option>
+                <option value="Astrology">Astrology</option>
+                <option value="Vivaham">Vivaham</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="lead-filter-status">Status</label>
+              <select id="lead-filter-status" style="padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); width: 100%;">
+                <option value="">All Statuses</option>
+                <option value="New">New</option>
+                <option value="Contacted">Contacted</option>
+                <option value="Interested">Interested</option>
+                <option value="Follow-up Required">Follow-up Required</option>
+                <option value="Converted">Converted</option>
+                <option value="Not Interested">Not Interested</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="lead-filter-platform">Platform</label>
+              <select id="lead-filter-platform" style="padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); width: 100%;">
+                <option value="">All Platforms</option>
+                <option value="facebook">Facebook</option>
+                <option value="instagram">Instagram</option>
+                <option value="youtube">YouTube</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="lead-filter-category">Enquiry Category</label>
+              <select id="lead-filter-category" style="padding: 8px; border-radius: 6px; border: 1px solid var(--border-color); width: 100%;">
+                <option value="">All Categories</option>
+                <option value="Astrology consultation">Astrology consultation</option>
+                <option value="Horoscope analysis">Horoscope analysis</option>
+                <option value="Horoscope matching">Horoscope matching</option>
+                <option value="Marriage enquiry">Marriage enquiry</option>
+                <option value="Numerology">Numerology</option>
+                <option value="General enquiry">General enquiry</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <h3>Leads</h3>
+            <button class="secondary-btn" id="btn-refresh-leads" style="padding: 6px 12px; font-size: 13px;">Refresh</button>
+          </div>
+          <div style="overflow-x: auto; padding: 16px;">
+            <table class="activity-table" style="width: 100%; border-collapse: collapse;">
+              <thead>
+                <tr>
+                  <th>Business</th>
+                  <th>Platform</th>
+                  <th>Customer</th>
+                  <th>Category</th>
+                  <th>Status</th>
+                  <th>Priority</th>
+                  <th>Message</th>
+                </tr>
+              </thead>
+              <tbody id="leads-table-body">
+                <tr>
+                  <td colspan="7" style="text-align: center; padding: 24px; color: var(--text-muted);">No leads found.</td>
                 </tr>
               </tbody>
             </table>

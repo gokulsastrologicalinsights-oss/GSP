@@ -205,6 +205,51 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_notifications_read_created ON notifications (is_read, created_at DESC)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_activities_platform_status ON activities (platform, status, created_at DESC)")
 
+    # Smart Lead Management (V2.0 Phase 2.0A)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS leads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_type TEXT NOT NULL,
+        platform TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        source_comment_id TEXT NOT NULL,
+        customer_name TEXT,
+        customer_username TEXT,
+        customer_contact TEXT,
+        enquiry_category TEXT NOT NULL,
+        original_message TEXT NOT NULL,
+        detected_language TEXT,
+        lead_status TEXT NOT NULL DEFAULT 'New',
+        priority TEXT NOT NULL DEFAULT 'Medium',
+        internal_notes TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        last_contacted_at TIMESTAMP,
+        next_follow_up_at TIMESTAMP,
+        converted_at TIMESTAMP,
+        UNIQUE(platform, account_id, source_comment_id)
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_leads_business_status ON leads (business_type, lead_status, created_at DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_leads_business_platform ON leads (business_type, platform, created_at DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_leads_business_category ON leads (business_type, enquiry_category, created_at DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_leads_follow_up ON leads (business_type, next_follow_up_at)")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS lead_activity_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        lead_id INTEGER NOT NULL,
+        business_type TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        old_value TEXT,
+        new_value TEXT,
+        details TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_lead_history_lead_id ON lead_activity_history (lead_id, created_at DESC)")
+
     from nlp_detector import APPROVED_TEMPLATES
     for lang, items in APPROVED_TEMPLATES.items():
         for item in items:
@@ -1449,6 +1494,324 @@ def get_dashboard_summary() -> Dict[str, Any]:
             "blocked_attempts": blocked_attempts,
             "recent_failures": failed_attempts + failed_activities,
             "unread_notifications": unread_notifications,
+        }
+    finally:
+        conn.close()
+
+
+# ==============================================================================
+# Smart Lead Management (GSP V2.0 - Phase 2.0A)
+# ==============================================================================
+
+VALID_BUSINESS_TYPES = ("Astrology", "Vivaham")
+VALID_ENQUIRY_CATEGORIES = (
+    "Astrology consultation",
+    "Horoscope analysis",
+    "Horoscope matching",
+    "Marriage enquiry",
+    "Numerology",
+    "General enquiry",
+    "Other",
+)
+VALID_LEAD_STATUSES = (
+    "New",
+    "Contacted",
+    "Interested",
+    "Converted",
+    "Not Interested",
+    "Follow-up Required",
+)
+VALID_LEAD_PRIORITIES = ("High", "Medium", "Low")
+VALID_LEAD_PLATFORMS = ("facebook", "instagram", "youtube")
+
+
+def _record_lead_history(
+    cursor: sqlite3.Cursor,
+    lead_id: int,
+    business_type: str,
+    event_type: str,
+    old_value: Optional[str] = None,
+    new_value: Optional[str] = None,
+    details: Optional[str] = None,
+) -> None:
+    """Append an immutable activity history record for a lead."""
+    cursor.execute(
+        """
+        INSERT INTO lead_activity_history
+        (lead_id, business_type, event_type, old_value, new_value, details)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (lead_id, business_type, event_type, old_value, new_value, details),
+    )
+
+
+def create_lead(data: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Create a new lead with duplicate prevention and initial history entry.
+
+    Returns (lead_dict, error_message). If duplicate, error_message is 'duplicate'.
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            """
+            INSERT INTO leads (
+                business_type, platform, account_id, source_comment_id,
+                customer_name, customer_username, customer_contact,
+                enquiry_category, original_message, detected_language,
+                lead_status, priority, internal_notes, next_follow_up_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data["business_type"],
+                data["platform"].lower(),
+                data["account_id"],
+                data["source_comment_id"],
+                data.get("customer_name"),
+                data.get("customer_username"),
+                data.get("customer_contact"),
+                data["enquiry_category"],
+                data["original_message"],
+                data.get("detected_language"),
+                data.get("lead_status", "New"),
+                data.get("priority", "Medium"),
+                data.get("internal_notes"),
+                data.get("next_follow_up_at"),
+            ),
+        )
+        lead_id = c.lastrowid
+        _record_lead_history(
+            c,
+            lead_id=lead_id,
+            business_type=data["business_type"],
+            event_type="lead_created",
+            new_value=data.get("lead_status", "New"),
+            details=f"Lead created for {data['business_type']} ({data['enquiry_category']})",
+        )
+        conn.commit()
+        c.execute("SELECT * FROM leads WHERE id = ?", (lead_id,))
+        row = c.fetchone()
+        return (dict(row) if row else None, None)
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return (None, "duplicate")
+    finally:
+        conn.close()
+
+
+def get_leads(
+    business_type: Optional[str] = None,
+    platform: Optional[str] = None,
+    lead_status: Optional[str] = None,
+    enquiry_category: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """Retrieve leads with optional business, platform, status, and category filters."""
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        clauses = []
+        params: List[Any] = []
+        if business_type:
+            clauses.append("business_type = ?")
+            params.append(business_type)
+        if platform:
+            clauses.append("platform = ?")
+            params.append(platform.lower())
+        if lead_status:
+            clauses.append("lead_status = ?")
+            params.append(lead_status)
+        if enquiry_category:
+            clauses.append("enquiry_category = ?")
+            params.append(enquiry_category)
+
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.extend([limit, offset])
+        c.execute(
+            f"SELECT * FROM leads {where_sql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            tuple(params),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_lead_by_id(lead_id: int, business_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Retrieve a single lead by ID, optionally enforcing business_type isolation."""
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        if business_type:
+            c.execute("SELECT * FROM leads WHERE id = ? AND business_type = ?", (lead_id, business_type))
+        else:
+            c.execute("SELECT * FROM leads WHERE id = ?", (lead_id,))
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def update_lead(
+    lead_id: int,
+    updates: Dict[str, Any],
+    business_type: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Update a lead and record immutable history entries for each changed field."""
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        if business_type:
+            c.execute("SELECT * FROM leads WHERE id = ? AND business_type = ?", (lead_id, business_type))
+        else:
+            c.execute("SELECT * FROM leads WHERE id = ?", (lead_id,))
+        existing = c.fetchone()
+        if not existing:
+            return None
+        existing_dict = dict(existing)
+        lead_business = existing_dict["business_type"]
+
+        set_clauses = ["updated_at = CURRENT_TIMESTAMP"]
+        params: List[Any] = []
+
+        updatable_fields = (
+            "lead_status",
+            "priority",
+            "internal_notes",
+            "customer_contact",
+            "next_follow_up_at",
+            "last_contacted_at",
+            "converted_at",
+            "enquiry_category",
+        )
+        for field in updatable_fields:
+            if field in updates and updates[field] is not None:
+                set_clauses.append(f"{field} = ?")
+                params.append(updates[field])
+
+        # Automatically set converted_at when transitioning to Converted
+        if updates.get("lead_status") == "Converted" and not existing_dict.get("converted_at") and "converted_at" not in updates:
+            set_clauses.append("converted_at = CURRENT_TIMESTAMP")
+
+        # Automatically set last_contacted_at when transitioning to Contacted
+        if updates.get("lead_status") == "Contacted" and "last_contacted_at" not in updates:
+            set_clauses.append("last_contacted_at = CURRENT_TIMESTAMP")
+
+        params.append(lead_id)
+        c.execute(f"UPDATE leads SET {', '.join(set_clauses)} WHERE id = ?", tuple(params))
+
+        # Record history events
+        if "lead_status" in updates and updates["lead_status"] is not None and updates["lead_status"] != existing_dict["lead_status"]:
+            _record_lead_history(
+                c,
+                lead_id=lead_id,
+                business_type=lead_business,
+                event_type="status_changed",
+                old_value=existing_dict["lead_status"],
+                new_value=updates["lead_status"],
+                details=f"Status changed from {existing_dict['lead_status']} to {updates['lead_status']}",
+            )
+        if "priority" in updates and updates["priority"] is not None and updates["priority"] != existing_dict["priority"]:
+            _record_lead_history(
+                c,
+                lead_id=lead_id,
+                business_type=lead_business,
+                event_type="priority_changed",
+                old_value=existing_dict["priority"],
+                new_value=updates["priority"],
+                details=f"Priority changed from {existing_dict['priority']} to {updates['priority']}",
+            )
+        if "internal_notes" in updates and updates["internal_notes"] is not None and updates["internal_notes"] != existing_dict.get("internal_notes"):
+            _record_lead_history(
+                c,
+                lead_id=lead_id,
+                business_type=lead_business,
+                event_type="notes_added",
+                old_value=existing_dict.get("internal_notes"),
+                new_value=updates["internal_notes"],
+                details="Internal notes updated",
+            )
+        if "customer_contact" in updates and updates["customer_contact"] is not None and updates["customer_contact"] != existing_dict.get("customer_contact"):
+            _record_lead_history(
+                c,
+                lead_id=lead_id,
+                business_type=lead_business,
+                event_type="contact_updated",
+                old_value=existing_dict.get("customer_contact"),
+                new_value=updates["customer_contact"],
+                details="Customer contact updated",
+            )
+        if "next_follow_up_at" in updates and updates["next_follow_up_at"] is not None and updates["next_follow_up_at"] != existing_dict.get("next_follow_up_at"):
+            _record_lead_history(
+                c,
+                lead_id=lead_id,
+                business_type=lead_business,
+                event_type="follow_up_scheduled",
+                old_value=existing_dict.get("next_follow_up_at"),
+                new_value=updates["next_follow_up_at"],
+                details=f"Follow-up scheduled for {updates['next_follow_up_at']}",
+            )
+        if updates.get("follow_up_completed"):
+            _record_lead_history(
+                c,
+                lead_id=lead_id,
+                business_type=lead_business,
+                event_type="follow_up_completed",
+                new_value=updates.get("lead_status") or existing_dict["lead_status"],
+                details="Follow-up marked as completed",
+            )
+
+        conn.commit()
+        c.execute("SELECT * FROM leads WHERE id = ?", (lead_id,))
+        row = c.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_lead_history(lead_id: int, business_type: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+    """Retrieve immutable activity history for a lead, enforcing business_type if provided."""
+    lead = get_lead_by_id(lead_id, business_type=business_type)
+    if not lead:
+        return None
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "SELECT * FROM lead_activity_history WHERE lead_id = ? ORDER BY created_at DESC, id DESC",
+            (lead_id,),
+        )
+        return [dict(r) for r in c.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_leads_summary(business_type: Optional[str] = None) -> Dict[str, Any]:
+    """Return lead count summary grouped by business_type, status, and platform."""
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        where_sql = "WHERE business_type = ?" if business_type else ""
+        params = (business_type,) if business_type else ()
+
+        c.execute(f"SELECT COUNT(*) AS cnt FROM leads {where_sql}", params)
+        total = c.fetchone()["cnt"]
+
+        c.execute(f"SELECT business_type, COUNT(*) AS cnt FROM leads {where_sql} GROUP BY business_type", params)
+        by_business = {r["business_type"]: r["cnt"] for r in c.fetchall()}
+
+        c.execute(f"SELECT lead_status, COUNT(*) AS cnt FROM leads {where_sql} GROUP BY lead_status", params)
+        by_status = {r["lead_status"]: r["cnt"] for r in c.fetchall()}
+
+        c.execute(f"SELECT platform, COUNT(*) AS cnt FROM leads {where_sql} GROUP BY platform", params)
+        by_platform = {r["platform"]: r["cnt"] for r in c.fetchall()}
+
+        return {
+            "total": total,
+            "by_business": by_business,
+            "by_status": by_status,
+            "by_platform": by_platform,
         }
     finally:
         conn.close()
