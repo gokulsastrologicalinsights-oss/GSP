@@ -630,6 +630,192 @@ def update_approval_reply(
             conn.close()
 
 
+def ensure_approval_queue_columns() -> None:
+    """Safely add smart-reply columns to approval_queue if missing."""
+    conn = get_connection()
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(approval_queue)").fetchall()}
+        if "sentiment" not in cols:
+            conn.execute("ALTER TABLE approval_queue ADD COLUMN sentiment TEXT DEFAULT 'neutral'")
+        if "generation_method" not in cols:
+            conn.execute("ALTER TABLE approval_queue ADD COLUMN generation_method TEXT DEFAULT 'local_contextual'")
+        if "activity_id" not in cols:
+            conn.execute("ALTER TABLE approval_queue ADD COLUMN activity_id INTEGER")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _update_queue_status_simple(
+    queue_id: int, new_status: str, user_action: str
+) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    with _approval_lock:
+        conn = get_connection()
+        c = conn.cursor()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute(
+                """
+                UPDATE approval_queue
+                SET status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status IN ('pending', 'manual_followup')
+                """,
+                (new_status, queue_id),
+            )
+            if c.rowcount == 0:
+                c.execute("SELECT * FROM approval_queue WHERE id = ?", (queue_id,))
+                row = c.fetchone()
+                conn.rollback()
+                if not row:
+                    return (False, "not_found", None)
+                return (False, f"invalid_transition_from_{row['status']}_to_{new_status}", dict(row))
+            c.execute("SELECT * FROM approval_queue WHERE id = ?", (queue_id,))
+            updated = dict(c.fetchone())
+            _log_approval_activity_with_cursor(c, updated, user_action=user_action)
+            conn.commit()
+            return (True, None, updated)
+        finally:
+            conn.close()
+
+
+def ignore_approval_item(queue_id: int) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    """Mark a pending or manual_followup queue item as ignored."""
+    return _update_queue_status_simple(queue_id, "ignored", "ignore")
+
+
+def mark_manual_followup_item(queue_id: int) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    """Mark a pending queue item for manual follow-up."""
+    return _update_queue_status_simple(queue_id, "manual_followup", "manual_followup")
+
+
+def regenerate_approval_item(queue_id: int) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    """Regenerate a personalized reply suggestion for a pending/manual_followup item."""
+    import reply_suggester
+
+    ensure_approval_queue_columns()
+    with _approval_lock:
+        conn = get_connection()
+        c = conn.cursor()
+        try:
+            c.execute("SELECT * FROM approval_queue WHERE id = ?", (queue_id,))
+            row = c.fetchone()
+            if not row:
+                return (False, "not_found", None)
+            item = dict(row)
+            if item["status"] not in ("pending", "manual_followup"):
+                return (False, f"cannot_regenerate_status_{item['status']}", item)
+
+            acc_row = c.execute(
+                "SELECT account_name FROM accounts WHERE platform = ? AND account_id = ? LIMIT 1",
+                (item["platform"], item["account_id"]),
+            ).fetchone()
+            account_name = acc_row["account_name"] if acc_row else None
+
+            suggestion = reply_suggester.generate_reply_suggestion(
+                comment_text=item.get("comment_text") or "",
+                commenter_name=item.get("commenter_name"),
+                account_name=account_name,
+                platform=item.get("platform"),
+            )
+            c.execute(
+                """
+                UPDATE approval_queue
+                SET suggested_reply = ?,
+                    edited_reply = NULL,
+                    detected_language = ?,
+                    detected_intent = ?,
+                    sentiment = ?,
+                    review_reason = ?,
+                    generation_method = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    suggestion["suggested_reply"],
+                    suggestion["language"],
+                    suggestion["intent"],
+                    suggestion["sentiment"],
+                    suggestion["reason"],
+                    suggestion["generation_method"],
+                    queue_id,
+                ),
+            )
+            c.execute("SELECT * FROM approval_queue WHERE id = ?", (queue_id,))
+            updated = dict(c.fetchone())
+            conn.commit()
+            return (True, None, updated)
+        finally:
+            conn.close()
+
+
+def sync_review_required_to_approval_queue() -> Dict[str, int]:
+    """Idempotently backfill eligible review_required activities into approval_queue."""
+    import reply_suggester
+
+    ensure_approval_queue_columns()
+    with _approval_lock:
+        conn = get_connection()
+        c = conn.cursor()
+        try:
+            rows = c.execute(
+                """
+                SELECT a.id, a.platform, COALESCE(a.account_id, '') AS account_id,
+                       a.comment_id, a.author_name, a.comment_text,
+                       a.detected_language, a.detected_intent, a.reply_text,
+                       a.reason, a.created_at
+                FROM activities a
+                WHERE a.status = 'review_required'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM approval_queue q
+                      WHERE q.platform = a.platform AND q.comment_id = a.comment_id
+                  )
+                """
+            ).fetchall()
+            inserted = 0
+            for r in rows:
+                suggestion = reply_suggester.generate_reply_suggestion(
+                    comment_text=r["comment_text"] or "",
+                    commenter_name=r["author_name"],
+                    platform=r["platform"],
+                )
+                suggested_reply = (r["reply_text"] or "").strip() or suggestion["suggested_reply"]
+                reason = (r["reason"] or "").strip() or suggestion["reason"]
+                c.execute(
+                    """
+                    INSERT INTO approval_queue (
+                        platform, account_id, comment_id, commenter_name, comment_text,
+                        detected_language, detected_intent, sentiment, suggested_reply,
+                        status, review_reason, generation_method, activity_id,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        r["platform"],
+                        r["account_id"],
+                        r["comment_id"],
+                        r["author_name"],
+                        r["comment_text"],
+                        r["detected_language"] or suggestion["language"],
+                        r["detected_intent"] or suggestion["intent"],
+                        suggestion["sentiment"],
+                        suggested_reply,
+                        reason,
+                        suggestion["generation_method"],
+                        r["id"],
+                        r["created_at"],
+                        r["created_at"],
+                    ),
+                )
+                inserted += 1
+            conn.commit()
+            pending = c.execute(
+                "SELECT COUNT(id) FROM approval_queue WHERE status = 'pending'"
+            ).fetchone()[0]
+            return {"inserted": inserted, "pending": pending}
+        finally:
+            conn.close()
+
+
 def approve_approval_item(
     queue_id: int, edited_reply: Optional[str] = None
 ) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
@@ -675,6 +861,192 @@ def approve_approval_item(
             _log_approval_activity_with_cursor(c, updated, user_action="approve")
             conn.commit()
             return (True, None, updated)
+        finally:
+            conn.close()
+
+
+def ensure_approval_queue_columns() -> None:
+    """Safely add smart-reply columns to approval_queue if missing."""
+    conn = get_connection()
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(approval_queue)").fetchall()}
+        if "sentiment" not in cols:
+            conn.execute("ALTER TABLE approval_queue ADD COLUMN sentiment TEXT DEFAULT 'neutral'")
+        if "generation_method" not in cols:
+            conn.execute("ALTER TABLE approval_queue ADD COLUMN generation_method TEXT DEFAULT 'local_contextual'")
+        if "activity_id" not in cols:
+            conn.execute("ALTER TABLE approval_queue ADD COLUMN activity_id INTEGER")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _update_queue_status_simple(
+    queue_id: int, new_status: str, user_action: str
+) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    with _approval_lock:
+        conn = get_connection()
+        c = conn.cursor()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute(
+                """
+                UPDATE approval_queue
+                SET status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status IN ('pending', 'manual_followup')
+                """,
+                (new_status, queue_id),
+            )
+            if c.rowcount == 0:
+                c.execute("SELECT * FROM approval_queue WHERE id = ?", (queue_id,))
+                row = c.fetchone()
+                conn.rollback()
+                if not row:
+                    return (False, "not_found", None)
+                return (False, f"invalid_transition_from_{row['status']}_to_{new_status}", dict(row))
+            c.execute("SELECT * FROM approval_queue WHERE id = ?", (queue_id,))
+            updated = dict(c.fetchone())
+            _log_approval_activity_with_cursor(c, updated, user_action=user_action)
+            conn.commit()
+            return (True, None, updated)
+        finally:
+            conn.close()
+
+
+def ignore_approval_item(queue_id: int) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    """Mark a pending or manual_followup queue item as ignored."""
+    return _update_queue_status_simple(queue_id, "ignored", "ignore")
+
+
+def mark_manual_followup_item(queue_id: int) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    """Mark a pending queue item for manual follow-up."""
+    return _update_queue_status_simple(queue_id, "manual_followup", "manual_followup")
+
+
+def regenerate_approval_item(queue_id: int) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    """Regenerate a personalized reply suggestion for a pending/manual_followup item."""
+    import reply_suggester
+
+    ensure_approval_queue_columns()
+    with _approval_lock:
+        conn = get_connection()
+        c = conn.cursor()
+        try:
+            c.execute("SELECT * FROM approval_queue WHERE id = ?", (queue_id,))
+            row = c.fetchone()
+            if not row:
+                return (False, "not_found", None)
+            item = dict(row)
+            if item["status"] not in ("pending", "manual_followup"):
+                return (False, f"cannot_regenerate_status_{item['status']}", item)
+
+            acc_row = c.execute(
+                "SELECT account_name FROM accounts WHERE platform = ? AND account_id = ? LIMIT 1",
+                (item["platform"], item["account_id"]),
+            ).fetchone()
+            account_name = acc_row["account_name"] if acc_row else None
+
+            suggestion = reply_suggester.generate_reply_suggestion(
+                comment_text=item.get("comment_text") or "",
+                commenter_name=item.get("commenter_name"),
+                account_name=account_name,
+                platform=item.get("platform"),
+            )
+            c.execute(
+                """
+                UPDATE approval_queue
+                SET suggested_reply = ?,
+                    edited_reply = NULL,
+                    detected_language = ?,
+                    detected_intent = ?,
+                    sentiment = ?,
+                    review_reason = ?,
+                    generation_method = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    suggestion["suggested_reply"],
+                    suggestion["language"],
+                    suggestion["intent"],
+                    suggestion["sentiment"],
+                    suggestion["reason"],
+                    suggestion["generation_method"],
+                    queue_id,
+                ),
+            )
+            c.execute("SELECT * FROM approval_queue WHERE id = ?", (queue_id,))
+            updated = dict(c.fetchone())
+            conn.commit()
+            return (True, None, updated)
+        finally:
+            conn.close()
+
+
+def sync_review_required_to_approval_queue() -> Dict[str, int]:
+    """Idempotently backfill eligible review_required activities into approval_queue."""
+    import reply_suggester
+
+    ensure_approval_queue_columns()
+    with _approval_lock:
+        conn = get_connection()
+        c = conn.cursor()
+        try:
+            rows = c.execute(
+                """
+                SELECT a.id, a.platform, COALESCE(a.account_id, '') AS account_id,
+                       a.comment_id, a.author_name, a.comment_text,
+                       a.detected_language, a.detected_intent, a.reply_text,
+                       a.reason, a.created_at
+                FROM activities a
+                WHERE a.status = 'review_required'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM approval_queue q
+                      WHERE q.platform = a.platform AND q.comment_id = a.comment_id
+                  )
+                """
+            ).fetchall()
+            inserted = 0
+            for r in rows:
+                suggestion = reply_suggester.generate_reply_suggestion(
+                    comment_text=r["comment_text"] or "",
+                    commenter_name=r["author_name"],
+                    platform=r["platform"],
+                )
+                suggested_reply = (r["reply_text"] or "").strip() or suggestion["suggested_reply"]
+                reason = (r["reason"] or "").strip() or suggestion["reason"]
+                c.execute(
+                    """
+                    INSERT INTO approval_queue (
+                        platform, account_id, comment_id, commenter_name, comment_text,
+                        detected_language, detected_intent, sentiment, suggested_reply,
+                        status, review_reason, generation_method, activity_id,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        r["platform"],
+                        r["account_id"],
+                        r["comment_id"],
+                        r["author_name"],
+                        r["comment_text"],
+                        r["detected_language"] or suggestion["language"],
+                        r["detected_intent"] or suggestion["intent"],
+                        suggestion["sentiment"],
+                        suggested_reply,
+                        reason,
+                        suggestion["generation_method"],
+                        r["id"],
+                        r["created_at"],
+                        r["created_at"],
+                    ),
+                )
+                inserted += 1
+            conn.commit()
+            pending = c.execute(
+                "SELECT COUNT(id) FROM approval_queue WHERE status = 'pending'"
+            ).fetchone()[0]
+            return {"inserted": inserted, "pending": pending}
         finally:
             conn.close()
 
@@ -726,6 +1098,192 @@ def reject_approval_item(
             )
             conn.commit()
             return (True, None, updated)
+        finally:
+            conn.close()
+
+
+def ensure_approval_queue_columns() -> None:
+    """Safely add smart-reply columns to approval_queue if missing."""
+    conn = get_connection()
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(approval_queue)").fetchall()}
+        if "sentiment" not in cols:
+            conn.execute("ALTER TABLE approval_queue ADD COLUMN sentiment TEXT DEFAULT 'neutral'")
+        if "generation_method" not in cols:
+            conn.execute("ALTER TABLE approval_queue ADD COLUMN generation_method TEXT DEFAULT 'local_contextual'")
+        if "activity_id" not in cols:
+            conn.execute("ALTER TABLE approval_queue ADD COLUMN activity_id INTEGER")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _update_queue_status_simple(
+    queue_id: int, new_status: str, user_action: str
+) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    with _approval_lock:
+        conn = get_connection()
+        c = conn.cursor()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute(
+                """
+                UPDATE approval_queue
+                SET status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status IN ('pending', 'manual_followup')
+                """,
+                (new_status, queue_id),
+            )
+            if c.rowcount == 0:
+                c.execute("SELECT * FROM approval_queue WHERE id = ?", (queue_id,))
+                row = c.fetchone()
+                conn.rollback()
+                if not row:
+                    return (False, "not_found", None)
+                return (False, f"invalid_transition_from_{row['status']}_to_{new_status}", dict(row))
+            c.execute("SELECT * FROM approval_queue WHERE id = ?", (queue_id,))
+            updated = dict(c.fetchone())
+            _log_approval_activity_with_cursor(c, updated, user_action=user_action)
+            conn.commit()
+            return (True, None, updated)
+        finally:
+            conn.close()
+
+
+def ignore_approval_item(queue_id: int) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    """Mark a pending or manual_followup queue item as ignored."""
+    return _update_queue_status_simple(queue_id, "ignored", "ignore")
+
+
+def mark_manual_followup_item(queue_id: int) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    """Mark a pending queue item for manual follow-up."""
+    return _update_queue_status_simple(queue_id, "manual_followup", "manual_followup")
+
+
+def regenerate_approval_item(queue_id: int) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    """Regenerate a personalized reply suggestion for a pending/manual_followup item."""
+    import reply_suggester
+
+    ensure_approval_queue_columns()
+    with _approval_lock:
+        conn = get_connection()
+        c = conn.cursor()
+        try:
+            c.execute("SELECT * FROM approval_queue WHERE id = ?", (queue_id,))
+            row = c.fetchone()
+            if not row:
+                return (False, "not_found", None)
+            item = dict(row)
+            if item["status"] not in ("pending", "manual_followup"):
+                return (False, f"cannot_regenerate_status_{item['status']}", item)
+
+            acc_row = c.execute(
+                "SELECT account_name FROM accounts WHERE platform = ? AND account_id = ? LIMIT 1",
+                (item["platform"], item["account_id"]),
+            ).fetchone()
+            account_name = acc_row["account_name"] if acc_row else None
+
+            suggestion = reply_suggester.generate_reply_suggestion(
+                comment_text=item.get("comment_text") or "",
+                commenter_name=item.get("commenter_name"),
+                account_name=account_name,
+                platform=item.get("platform"),
+            )
+            c.execute(
+                """
+                UPDATE approval_queue
+                SET suggested_reply = ?,
+                    edited_reply = NULL,
+                    detected_language = ?,
+                    detected_intent = ?,
+                    sentiment = ?,
+                    review_reason = ?,
+                    generation_method = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    suggestion["suggested_reply"],
+                    suggestion["language"],
+                    suggestion["intent"],
+                    suggestion["sentiment"],
+                    suggestion["reason"],
+                    suggestion["generation_method"],
+                    queue_id,
+                ),
+            )
+            c.execute("SELECT * FROM approval_queue WHERE id = ?", (queue_id,))
+            updated = dict(c.fetchone())
+            conn.commit()
+            return (True, None, updated)
+        finally:
+            conn.close()
+
+
+def sync_review_required_to_approval_queue() -> Dict[str, int]:
+    """Idempotently backfill eligible review_required activities into approval_queue."""
+    import reply_suggester
+
+    ensure_approval_queue_columns()
+    with _approval_lock:
+        conn = get_connection()
+        c = conn.cursor()
+        try:
+            rows = c.execute(
+                """
+                SELECT a.id, a.platform, COALESCE(a.account_id, '') AS account_id,
+                       a.comment_id, a.author_name, a.comment_text,
+                       a.detected_language, a.detected_intent, a.reply_text,
+                       a.reason, a.created_at
+                FROM activities a
+                WHERE a.status = 'review_required'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM approval_queue q
+                      WHERE q.platform = a.platform AND q.comment_id = a.comment_id
+                  )
+                """
+            ).fetchall()
+            inserted = 0
+            for r in rows:
+                suggestion = reply_suggester.generate_reply_suggestion(
+                    comment_text=r["comment_text"] or "",
+                    commenter_name=r["author_name"],
+                    platform=r["platform"],
+                )
+                suggested_reply = (r["reply_text"] or "").strip() or suggestion["suggested_reply"]
+                reason = (r["reason"] or "").strip() or suggestion["reason"]
+                c.execute(
+                    """
+                    INSERT INTO approval_queue (
+                        platform, account_id, comment_id, commenter_name, comment_text,
+                        detected_language, detected_intent, sentiment, suggested_reply,
+                        status, review_reason, generation_method, activity_id,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        r["platform"],
+                        r["account_id"],
+                        r["comment_id"],
+                        r["author_name"],
+                        r["comment_text"],
+                        r["detected_language"] or suggestion["language"],
+                        r["detected_intent"] or suggestion["intent"],
+                        suggestion["sentiment"],
+                        suggested_reply,
+                        reason,
+                        suggestion["generation_method"],
+                        r["id"],
+                        r["created_at"],
+                        r["created_at"],
+                    ),
+                )
+                inserted += 1
+            conn.commit()
+            pending = c.execute(
+                "SELECT COUNT(id) FROM approval_queue WHERE status = 'pending'"
+            ).fetchone()[0]
+            return {"inserted": inserted, "pending": pending}
         finally:
             conn.close()
 

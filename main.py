@@ -940,6 +940,46 @@ def reject_approval_queue_item(
     return {"success": True, "item": item}
 
 
+@app.post("/api/approval-queue/{queue_id}/ignore")
+def ignore_approval_queue_item(queue_id: int):
+    """Ignore a pending or manual_followup queue item."""
+    ok, err, item = database.ignore_approval_item(queue_id)
+    if err == "not_found":
+        raise HTTPException(status_code=404, detail="Approval queue item not found")
+    if not ok:
+        raise HTTPException(status_code=400, detail=err)
+    return {"success": True, "item": item}
+
+
+@app.post("/api/approval-queue/{queue_id}/manual-followup")
+def manual_followup_approval_queue_item(queue_id: int):
+    """Mark a pending queue item for manual follow-up."""
+    ok, err, item = database.mark_manual_followup_item(queue_id)
+    if err == "not_found":
+        raise HTTPException(status_code=404, detail="Approval queue item not found")
+    if not ok:
+        raise HTTPException(status_code=400, detail=err)
+    return {"success": True, "item": item}
+
+
+@app.post("/api/approval-queue/{queue_id}/regenerate")
+def regenerate_approval_queue_item(queue_id: int):
+    """Regenerate a personalized reply suggestion for a pending/manual_followup item."""
+    ok, err, item = database.regenerate_approval_item(queue_id)
+    if err == "not_found":
+        raise HTTPException(status_code=404, detail="Approval queue item not found")
+    if not ok:
+        raise HTTPException(status_code=400, detail=err)
+    return {"success": True, "item": item}
+
+
+@app.post("/api/approval-queue/sync")
+def sync_approval_queue_from_activities():
+    """Idempotently backfill eligible review_required activities into approval_queue."""
+    result = database.sync_review_required_to_approval_queue()
+    return {"success": True, **result}
+
+
 @app.post("/api/approval-queue/{queue_id}/prepare-publish")
 def prepare_approval_queue_publish(queue_id: int):
     """Prepare safe publishing for one approved queue item (Priority 2D, no external dispatch)."""

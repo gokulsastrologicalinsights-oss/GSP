@@ -1772,9 +1772,17 @@ function renderApprovalQueue() {
     const actionsHtml = isPending
       ? `
         <div class="aq-card-actions">
-          ${!isEditing ? `<button type="button" class="secondary-btn sm" onclick="startApprovalEdit(${item.id})" ${isBusy ? 'disabled' : ''}>Edit Reply</button>` : ''}
-          <button type="button" class="aq-btn-approve" onclick="approveQueueItem(${item.id})" ${isBusy ? 'disabled' : ''}>${isBusy ? 'Processing...' : 'Approve'}</button>
+          ${!isEditing ? `<button type="button" class="secondary-btn sm" onclick="startApprovalEdit(${item.id})" ${isBusy ? 'disabled' : ''}>Edit &amp; Send</button>` : ''}
+          <button type="button" class="secondary-btn sm" onclick="regenerateQueueItem(${item.id})" ${isBusy ? 'disabled' : ''}>Regenerate Suggestion</button>
+          <button type="button" class="aq-btn-approve" onclick="approveQueueItem(${item.id})" ${isBusy ? 'disabled' : ''}>${isBusy ? 'Processing...' : 'Approve &amp; Send'}</button>
+          <button type="button" class="secondary-btn sm" onclick="ignoreQueueItem(${item.id})" ${isBusy ? 'disabled' : ''}>Ignore</button>
+          <button type="button" class="secondary-btn sm" onclick="manualFollowupQueueItem(${item.id})" ${isBusy ? 'disabled' : ''}>Manual Follow-up</button>
           <button type="button" class="aq-btn-reject" onclick="promptRejectQueueItem(${item.id})" ${isBusy ? 'disabled' : ''}>Reject</button>
+        </div>
+        <div style="font-size:0.75rem;opacity:0.75;margin-top:4px;">
+          Sentiment: <strong>${aqEscapeHtml(item.sentiment || 'neutral')}</strong> ·
+          Method: <strong>${aqEscapeHtml(item.generation_method || 'local_contextual')}</strong>
+          ${item.account_id ? ` · Account: <strong>${aqEscapeHtml(item.account_id)}</strong>` : ''}
         </div>
         ${isConfirmingReject ? `
           <div class="aq-reject-confirm">
@@ -2030,6 +2038,35 @@ async function prepareTestReply(queueId) {
     aqState.processingIds.delete(queueId);
     renderApprovalQueue();
   }
+}
+
+async function _aqSimpleAction(queueId, endpoint, successMsg) {
+  aqState.processingIds.add(queueId);
+  renderApprovalQueue();
+  try {
+    const res = await fetch(`/api/approval-queue/${queueId}/${endpoint}`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || 'Action failed.');
+    aqShowFeedback(successMsg, 'success');
+    await loadApprovalQueue();
+  } catch (err) {
+    aqShowFeedback(err.message || 'Action failed.', 'error');
+  } finally {
+    aqState.processingIds.delete(queueId);
+    renderApprovalQueue();
+  }
+}
+
+function regenerateQueueItem(queueId) {
+  return _aqSimpleAction(queueId, 'regenerate', 'Suggestion regenerated.');
+}
+
+function ignoreQueueItem(queueId) {
+  return _aqSimpleAction(queueId, 'ignore', 'Item marked as ignored.');
+}
+
+function manualFollowupQueueItem(queueId) {
+  return _aqSimpleAction(queueId, 'manual-followup', 'Marked for manual follow-up.');
 }
 
 async function approveQueueItem(queueId) {
