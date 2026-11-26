@@ -77,6 +77,7 @@ def init_db():
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('yt_auto_reply_enabled', 'false')")
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('safe_test_mode', 'true')")
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('global_kill_switch', 'false')")
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ui_theme', 'dark')")
     for _p_prefix in ("fb", "ig", "yt"):
         cursor.execute(f"INSERT OR IGNORE INTO settings (key, value) VALUES ('{_p_prefix}_praise_enabled', 'true')")
         cursor.execute(f"INSERT OR IGNORE INTO settings (key, value) VALUES ('{_p_prefix}_emoji_enabled', 'true')")
@@ -263,6 +264,24 @@ def init_db():
     )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_posting_slots_account ON posting_slots (account_key, is_active, slot_order)")
+    # Deduplicate any legacy duplicate posting_slots before enforcing uniqueness
+    cursor.execute("""
+    DELETE FROM posting_slots
+    WHERE id NOT IN (
+        SELECT MIN(id) FROM posting_slots GROUP BY account_key, day_of_week, slot_time
+    )
+    """)
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_posting_slots_unique ON posting_slots (account_key, day_of_week, slot_time)")
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS posting_schedule_settings (
+        account_key TEXT PRIMARY KEY,
+        timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
+        weekly_goal INTEGER NOT NULL DEFAULT 14,
+        enabled_days TEXT NOT NULL DEFAULT '[0,1,2,3,4,5,6]',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
 
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS scheduled_posts (
@@ -319,7 +338,60 @@ def init_db():
                 "INSERT OR REPLACE INTO approved_templates (template_id, language, template_text) VALUES (?, ?, ?)",
                 (item["id"], lang, item["text"]),
             )
-    
+
+    # Community Inbox: Post metadata cache (idempotent upsert)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS social_posts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        post_id TEXT NOT NULL,
+        caption TEXT,
+        thumbnail_url TEXT,
+        permalink TEXT,
+        media_type TEXT,
+        post_date TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(platform, post_id)
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_social_posts_platform_date ON social_posts (platform, post_date DESC)")
+
+    # Community Inbox: 3-level reply suggestions per comment
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS inbox_suggestions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL,
+        comment_id TEXT NOT NULL,
+        language TEXT,
+        sentiment TEXT,
+        intent TEXT,
+        short_reply TEXT,
+        medium_reply TEXT,
+        detailed_reply TEXT,
+        selected_level TEXT,
+        reason TEXT,
+        recommend_no_reply INTEGER DEFAULT 0,
+        manual_review_required INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(platform, comment_id)
+    )
+    """)
+
+    # Extend activities with optional metadata columns if not present
+    cursor.execute("PRAGMA table_info(activities)")
+    act_cols = {row["name"] for row in cursor.fetchall()}
+    for col_name, col_type in [
+        ("author_avatar", "TEXT"),
+        ("comment_timestamp", "TEXT"),
+        ("sentiment", "TEXT"),
+        ("replied_at", "TEXT"),
+    ]:
+        if col_name not in act_cols:
+            cursor.execute(f"ALTER TABLE activities ADD COLUMN {col_name} {col_type}")
+
     conn.commit()
     conn.close()
 
@@ -2454,3 +2526,870 @@ def get_leads_summary(business_type: Optional[str] = None) -> Dict[str, Any]:
 if __name__ == "__main__":
     init_db()
     print("Database initialized.")
+
+
+# =============================================================================
+# Community Inbox (Post-Centric Comment Management & 3-Level Reply Workflow)
+# =============================================================================
+
+def upsert_social_post(
+    platform: str,
+    account_id: str,
+    post_id: str,
+    caption: str = "",
+    thumbnail_url: str = "",
+    permalink: str = "",
+    media_type: str = "",
+    post_date: str = "",
+) -> None:
+    """Idempotently insert or update post metadata in social_posts."""
+    if not platform or not post_id:
+        return
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        c.execute(
+            """
+            INSERT INTO social_posts (
+                platform, account_id, post_id, caption, thumbnail_url, permalink, media_type, post_date, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(platform, post_id) DO UPDATE SET
+                account_id = COALESCE(NULLIF(excluded.account_id, ''), social_posts.account_id),
+                caption = COALESCE(NULLIF(excluded.caption, ''), social_posts.caption),
+                thumbnail_url = COALESCE(NULLIF(excluded.thumbnail_url, ''), social_posts.thumbnail_url),
+                permalink = COALESCE(NULLIF(excluded.permalink, ''), social_posts.permalink),
+                media_type = COALESCE(NULLIF(excluded.media_type, ''), social_posts.media_type),
+                post_date = COALESCE(NULLIF(excluded.post_date, ''), social_posts.post_date),
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                platform.lower(),
+                account_id or "",
+                post_id,
+                caption or "",
+                thumbnail_url or "",
+                permalink or "",
+                media_type or "",
+                post_date or "",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_inbox_posts(
+    platform: Optional[str] = None,
+    status_filter: str = "all",
+    date_filter: str = "all",
+    search: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    """Return posts that have received comments, sorted by most recent activity."""
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        where_clauses = ["a.post_id IS NOT NULL AND TRIM(a.post_id) != ''"]
+        params: List[Any] = []
+
+        if platform and platform.lower() in ("facebook", "instagram", "youtube"):
+            where_clauses.append("LOWER(a.platform) = ?")
+            params.append(platform.lower())
+
+        if date_filter == "today":
+            where_clauses.append("date(COALESCE(NULLIF(a.comment_timestamp, ''), a.created_at)) >= date('now', 'localtime')")
+        elif date_filter == "7d":
+            where_clauses.append("datetime(COALESCE(NULLIF(a.comment_timestamp, ''), a.created_at)) >= datetime('now', '-7 days')")
+        elif date_filter == "30d":
+            where_clauses.append("datetime(COALESCE(NULLIF(a.comment_timestamp, ''), a.created_at)) >= datetime('now', '-30 days')")
+
+        where_sql = " AND ".join(where_clauses)
+
+        having_clauses = []
+        if status_filter == "unanswered":
+            having_clauses.append("unanswered_count > 0")
+        if search and search.strip():
+            like_term = f"%{search.strip().lower()}%"
+            having_clauses.append(
+                "(LOWER(COALESCE(caption, '')) LIKE ? OR LOWER(post_id) LIKE ? OR LOWER(COALESCE(account_name, '')) LIKE ?)"
+            )
+            params.extend([like_term, like_term, like_term])
+
+        having_sql = f"HAVING {' AND '.join(having_clauses)}" if having_clauses else ""
+
+        query = f"""
+            SELECT
+                LOWER(a.platform) AS platform,
+                a.post_id AS post_id,
+                COALESCE(MAX(NULLIF(a.account_id, '')), MAX(sp.account_id), '') AS account_id,
+                COALESCE(
+                    MAX(acc.account_name),
+                    (SELECT acc2.account_name FROM accounts acc2 WHERE LOWER(acc2.platform) = LOWER(a.platform) AND acc2.is_active = 1 LIMIT 1),
+                    UPPER(a.platform) || ' Account'
+                ) AS account_name,
+                COALESCE(MAX(sp.caption), '') AS caption,
+                COALESCE(MAX(sp.thumbnail_url), '') AS thumbnail_url,
+                COALESCE(MAX(sp.permalink), '') AS permalink,
+                COALESCE(MAX(sp.media_type), '') AS media_type,
+                COALESCE(MAX(NULLIF(sp.post_date, '')), MIN(a.created_at)) AS post_date,
+                COUNT(*) AS total_comments,
+                SUM(CASE WHEN a.status = 'replied' THEN 1 ELSE 0 END) AS replied_count,
+                SUM(CASE WHEN a.status = 'test_prepared' AND COALESCE(TRIM(a.reply_text), '') != '' THEN 1 ELSE 0 END) AS test_prepared_count,
+                SUM(CASE WHEN a.status = 'replied' OR (a.status = 'test_prepared' AND COALESCE(TRIM(a.reply_text), '') != '') THEN 1 ELSE 0 END) AS answered_count,
+                SUM(CASE WHEN NOT (a.status = 'replied' OR (a.status = 'test_prepared' AND COALESCE(TRIM(a.reply_text), '') != '')) THEN 1 ELSE 0 END) AS unanswered_count,
+                MAX(COALESCE(NULLIF(a.comment_timestamp, ''), a.created_at)) AS last_activity_at
+            FROM activities a
+            LEFT JOIN social_posts sp
+                ON LOWER(sp.platform) = LOWER(a.platform) AND sp.post_id = a.post_id
+            LEFT JOIN accounts acc
+                ON LOWER(acc.platform) = LOWER(a.platform) AND acc.account_id = a.account_id
+            WHERE {where_sql}
+            GROUP BY LOWER(a.platform), a.post_id
+            {having_sql}
+            ORDER BY last_activity_at DESC
+            LIMIT ? OFFSET ?
+        """
+        c.execute(query, tuple(params + [limit, offset]))
+        rows = [dict(r) for r in c.fetchall()]
+
+        # Compute summary counts across all matching posts (without pagination)
+        count_query = f"""
+            SELECT
+                LOWER(a.platform) AS platform,
+                a.post_id AS post_id,
+                COALESCE(
+                    MAX(acc.account_name),
+                    (SELECT acc2.account_name FROM accounts acc2 WHERE LOWER(acc2.platform) = LOWER(a.platform) AND acc2.is_active = 1 LIMIT 1),
+                    ''
+                ) AS account_name,
+                COALESCE(MAX(sp.caption), '') AS caption,
+                SUM(CASE WHEN NOT (a.status = 'replied' OR (a.status = 'test_prepared' AND COALESCE(TRIM(a.reply_text), '') != '')) THEN 1 ELSE 0 END) AS unanswered_count
+            FROM activities a
+            LEFT JOIN social_posts sp
+                ON LOWER(sp.platform) = LOWER(a.platform) AND sp.post_id = a.post_id
+            LEFT JOIN accounts acc
+                ON LOWER(acc.platform) = LOWER(a.platform) AND acc.account_id = a.account_id
+            WHERE {where_sql}
+            GROUP BY LOWER(a.platform), a.post_id
+            {having_sql}
+        """
+        c.execute(count_query, tuple(params))
+        total_posts = len(c.fetchall())
+
+        for row in rows:
+            total = row["total_comments"] or 0
+            answered = row["answered_count"] or 0
+            row["progress_pct"] = round((answered / total) * 100) if total > 0 else 0
+            if not row["caption"]:
+                row["caption"] = f"{row['platform'].capitalize()} Post ({row['post_id']})"
+
+        return {"posts": rows, "total_posts": total_posts}
+    finally:
+        conn.close()
+
+
+def _ensure_comment_suggestions_with_cursor(
+    c: sqlite3.Cursor,
+    platform: str,
+    comment_row: Dict[str, Any],
+    post_caption: str = "",
+    account_name: str = "",
+    force_regenerate: bool = False,
+) -> Dict[str, Any]:
+    """Return cached 3-level suggestions for a comment, generating and persisting if missing."""
+    import reply_suggester
+
+    comment_id = comment_row["comment_id"]
+    if not force_regenerate:
+        c.execute(
+            "SELECT * FROM inbox_suggestions WHERE LOWER(platform) = ? AND comment_id = ?",
+            (platform.lower(), comment_id),
+        )
+        existing = c.fetchone()
+        if existing:
+            ex = dict(existing)
+            return {
+                "language": ex.get("language") or "en",
+                "sentiment": ex.get("sentiment") or "neutral",
+                "intent": ex.get("intent") or "neutral",
+                "short": ex.get("short_reply") or "",
+                "medium": ex.get("medium_reply") or "",
+                "detailed": ex.get("detailed_reply") or "",
+                "selected_level": ex.get("selected_level"),
+                "recommend_no_reply": bool(ex.get("recommend_no_reply")),
+                "manual_review_required": bool(ex.get("manual_review_required")),
+                "reason": ex.get("reason") or "",
+            }
+
+    gen = reply_suggester.generate_three_level_suggestions(
+        comment_text=comment_row.get("comment_text") or "",
+        commenter_name=comment_row.get("author_name") or "",
+        account_name=account_name,
+        platform=platform,
+        post_caption=post_caption,
+    )
+
+    c.execute(
+        """
+        INSERT INTO inbox_suggestions (
+            platform, comment_id, language, sentiment, intent,
+            short_reply, medium_reply, detailed_reply,
+            reason, recommend_no_reply, manual_review_required, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(platform, comment_id) DO UPDATE SET
+            language = excluded.language,
+            sentiment = excluded.sentiment,
+            intent = excluded.intent,
+            short_reply = excluded.short_reply,
+            medium_reply = excluded.medium_reply,
+            detailed_reply = excluded.detailed_reply,
+            reason = excluded.reason,
+            recommend_no_reply = excluded.recommend_no_reply,
+            manual_review_required = excluded.manual_review_required,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            platform.lower(),
+            comment_id,
+            gen["language"],
+            gen["sentiment"],
+            gen["intent"],
+            gen["short"],
+            gen["medium"],
+            gen["detailed"],
+            gen["reason"],
+            1 if gen.get("recommend_no_reply") else 0,
+            1 if gen.get("manual_review_required") else 0,
+        ),
+    )
+
+    return {
+        "language": gen["language"],
+        "sentiment": gen["sentiment"],
+        "intent": gen["intent"],
+        "short": gen["short"],
+        "medium": gen["medium"],
+        "detailed": gen["detailed"],
+        "selected_level": None,
+        "recommend_no_reply": bool(gen.get("recommend_no_reply")),
+        "manual_review_required": bool(gen.get("manual_review_required")),
+        "reason": gen["reason"],
+    }
+
+
+def get_inbox_post_comments(
+    platform: str,
+    post_id: str,
+    limit: int = 20,
+    offset: int = 0,
+    status_filter: str = "all",
+) -> Optional[Dict[str, Any]]:
+    """Return selected post metadata and paginated comments with 3-level suggestions."""
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        plat = platform.lower()
+        c.execute(
+            """
+            SELECT
+                LOWER(a.platform) AS platform,
+                a.post_id AS post_id,
+                COALESCE(MAX(NULLIF(a.account_id, '')), MAX(sp.account_id), '') AS account_id,
+                COALESCE(
+                    MAX(acc.account_name),
+                    (SELECT acc2.account_name FROM accounts acc2 WHERE LOWER(acc2.platform) = ? AND acc2.is_active = 1 LIMIT 1),
+                    UPPER(a.platform) || ' Account'
+                ) AS account_name,
+                COALESCE(MAX(sp.caption), '') AS caption,
+                COALESCE(MAX(sp.thumbnail_url), '') AS thumbnail_url,
+                COALESCE(MAX(sp.permalink), '') AS permalink,
+                COALESCE(MAX(sp.media_type), '') AS media_type,
+                COALESCE(MAX(NULLIF(sp.post_date, '')), MIN(a.created_at)) AS post_date,
+                COUNT(*) AS total_comments,
+                SUM(CASE WHEN a.status = 'replied' THEN 1 ELSE 0 END) AS replied_count,
+                SUM(CASE WHEN a.status = 'test_prepared' AND COALESCE(TRIM(a.reply_text), '') != '' THEN 1 ELSE 0 END) AS test_prepared_count,
+                SUM(CASE WHEN a.status = 'replied' OR (a.status = 'test_prepared' AND COALESCE(TRIM(a.reply_text), '') != '') THEN 1 ELSE 0 END) AS answered_count,
+                SUM(CASE WHEN NOT (a.status = 'replied' OR (a.status = 'test_prepared' AND COALESCE(TRIM(a.reply_text), '') != '')) THEN 1 ELSE 0 END) AS unanswered_count
+            FROM activities a
+            LEFT JOIN social_posts sp
+                ON LOWER(sp.platform) = LOWER(a.platform) AND sp.post_id = a.post_id
+            LEFT JOIN accounts acc
+                ON LOWER(acc.platform) = LOWER(a.platform) AND acc.account_id = a.account_id
+            WHERE LOWER(a.platform) = ? AND a.post_id = ?
+            GROUP BY LOWER(a.platform), a.post_id
+            """,
+            (plat, plat, post_id),
+        )
+        post_row = c.fetchone()
+        if not post_row:
+            return None
+
+        post = dict(post_row)
+        if not post["caption"]:
+            post["caption"] = f"{post['platform'].capitalize()} Post ({post['post_id']})"
+        total = post["total_comments"] or 0
+        answered = post["answered_count"] or 0
+        post["progress_pct"] = round((answered / total) * 100) if total > 0 else 0
+
+        where_extra = ""
+        if status_filter == "unanswered":
+            where_extra = "AND NOT (a.status = 'replied' OR (a.status = 'test_prepared' AND COALESCE(TRIM(a.reply_text), '') != ''))"
+
+        c.execute(
+            f"""
+            SELECT COUNT(*) AS cnt
+            FROM activities a
+            WHERE LOWER(a.platform) = ? AND a.post_id = ? {where_extra}
+            """,
+            (plat, post_id),
+        )
+        filtered_total = c.fetchone()["cnt"]
+
+        c.execute(
+            f"""
+            SELECT
+                a.*,
+                aq.id AS approval_queue_id,
+                aq.status AS approval_status,
+                aq.edited_reply AS aq_edited_reply,
+                aq.published_at AS aq_published_at,
+                aq.review_reason AS aq_review_reason
+            FROM activities a
+            LEFT JOIN approval_queue aq
+                ON LOWER(aq.platform) = LOWER(a.platform) AND aq.comment_id = a.comment_id
+            WHERE LOWER(a.platform) = ? AND a.post_id = ? {where_extra}
+            ORDER BY COALESCE(NULLIF(a.comment_timestamp, ''), a.created_at) DESC, a.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (plat, post_id, limit, offset),
+        )
+        raw_comments = [dict(r) for r in c.fetchall()]
+
+        comments: List[Dict[str, Any]] = []
+        for row in raw_comments:
+            sugg = _ensure_comment_suggestions_with_cursor(
+                c,
+                platform=plat,
+                comment_row=row,
+                post_caption=post["caption"],
+                account_name=post["account_name"],
+            )
+            is_answered = (
+                row.get("status") == "replied"
+                or (row.get("status") == "test_prepared" and bool((row.get("reply_text") or "").strip()))
+            )
+            effective_reply = row.get("reply_text") or row.get("aq_edited_reply") or ""
+            comments.append(
+                {
+                    "id": row["id"],
+                    "platform": plat,
+                    "post_id": post_id,
+                    "account_id": row.get("account_id") or post["account_id"],
+                    "account_name": post["account_name"],
+                    "comment_id": row["comment_id"],
+                    "author_name": row.get("author_name") or "Community Member",
+                    "author_avatar": row.get("author_avatar") or "",
+                    "comment_text": row.get("comment_text") or "",
+                    "comment_timestamp": row.get("comment_timestamp") or row.get("created_at"),
+                    "detected_language": sugg["language"],
+                    "sentiment": row.get("sentiment") or sugg["sentiment"],
+                    "detected_intent": sugg["intent"],
+                    "reply_text": effective_reply if is_answered else "",
+                    "status": row.get("status") or "review_required",
+                    "replied_at": row.get("replied_at") or row.get("aq_published_at") or "",
+                    "is_answered": is_answered,
+                    "reason": row.get("reason") or row.get("aq_review_reason") or sugg["reason"],
+                    "api_error": row.get("api_error") or "",
+                    "approval_queue_id": row.get("approval_queue_id"),
+                    "approval_status": row.get("approval_status"),
+                    "suggestions": sugg,
+                }
+            )
+
+        conn.commit()
+        return {
+            "post": post,
+            "comments": comments,
+            "total_filtered": filtered_total,
+            "has_more": (offset + len(comments)) < filtered_total,
+        }
+    finally:
+        conn.close()
+
+
+def regenerate_inbox_comment_suggestions(platform: str, comment_id: str) -> Optional[Dict[str, Any]]:
+    """Regenerate and persist 3-level suggestions for a single comment."""
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        plat = platform.lower()
+        c.execute(
+            "SELECT * FROM activities WHERE LOWER(platform) = ? AND comment_id = ?",
+            (plat, comment_id),
+        )
+        row = c.fetchone()
+        if not row:
+            return None
+        comment_row = dict(row)
+        post_caption = ""
+        account_name = ""
+        if comment_row.get("post_id"):
+            c.execute(
+                "SELECT caption FROM social_posts WHERE LOWER(platform) = ? AND post_id = ?",
+                (plat, comment_row["post_id"]),
+            )
+            sp = c.fetchone()
+            if sp:
+                post_caption = sp["caption"] or ""
+        c.execute(
+            "SELECT account_name FROM accounts WHERE LOWER(platform) = ? AND is_active = 1 LIMIT 1",
+            (plat,),
+        )
+        acc = c.fetchone()
+        if acc:
+            account_name = acc["account_name"] or ""
+
+        sugg = _ensure_comment_suggestions_with_cursor(
+            c,
+            platform=plat,
+            comment_row=comment_row,
+            post_caption=post_caption,
+            account_name=account_name,
+            force_regenerate=True,
+        )
+        conn.commit()
+        return sugg
+    finally:
+        conn.close()
+
+
+def _reconcile_platform_reply(
+    platform: str,
+    account_id: str,
+    post_id: str,
+    comment_id: str,
+    reply_text: str,
+    access_token: str,
+) -> bool:
+    """Best-effort check after uncertain network outcome to see if reply already exists on platform."""
+    try:
+        import requests
+        plat = platform.lower()
+        if plat == "facebook":
+            url = f"https://graph.facebook.com/v19.0/{comment_id}/comments"
+            res = requests.get(url, params={"access_token": access_token, "fields": "id,message,from", "limit": 10}, timeout=8)
+            data = res.json().get("data", [])
+            return any((d.get("message") or "").strip() == reply_text.strip() for d in data)
+        if plat == "instagram":
+            url = f"https://graph.facebook.com/v19.0/{comment_id}/replies"
+            res = requests.get(url, params={"access_token": access_token, "fields": "id,text", "limit": 10}, timeout=8)
+            data = res.json().get("data", [])
+            return any((d.get("text") or "").strip() == reply_text.strip() for d in data)
+        if plat == "youtube":
+            url = "https://www.googleapis.com/youtube/v3/comments"
+            res = requests.get(
+                url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"part": "snippet", "parentId": comment_id, "maxResults": 10},
+                timeout=8,
+            )
+            items = res.json().get("items", [])
+            return any((it.get("snippet", {}).get("textOriginal") or "").strip() == reply_text.strip() for it in items)
+    except Exception:
+        return False
+    return False
+
+
+def send_inbox_reply(
+    platform: str,
+    comment_id: str,
+    reply_text: str,
+    selected_level: str = "custom",
+    now_ts: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Explicitly send (or Safe-Test-record) a reply to a specific comment with full safety checks.
+
+    1. Validate original comment ID.
+    2. Verify connected account.
+    3. Verify reply eligibility & non-empty text.
+    4. Check whether a reply has already been sent (duplicate prevention).
+    5. Apply existing rate limits and cooldowns.
+    6. Send exactly once (or record test_prepared in Safe Testing Mode).
+    7. Reconcile uncertain network outcomes before retrying.
+    """
+    plat = (platform or "").strip().lower()
+    cid = (comment_id or "").strip()
+    text = (reply_text or "").strip()
+    now = now_ts if now_ts is not None else time.time()
+
+    if not cid:
+        return {"success": False, "reason": "invalid_comment_id", "error": "Comment ID is required."}
+    if plat not in ("facebook", "instagram", "youtube"):
+        return {"success": False, "reason": "unsupported_platform", "error": f"Unsupported platform: {platform}"}
+    if not text:
+        return {"success": False, "reason": "empty_reply_text", "error": "Reply text cannot be empty."}
+
+    with _approval_lock:
+        conn = get_connection()
+        c = conn.cursor()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+
+            # 1. Validate original comment exists
+            c.execute(
+                "SELECT * FROM activities WHERE LOWER(platform) = ? AND comment_id = ?",
+                (plat, cid),
+            )
+            act_row = c.fetchone()
+            if not act_row:
+                conn.rollback()
+                return {"success": False, "reason": "comment_not_found", "error": "Original comment not found."}
+            act = dict(act_row)
+
+            # 2. Check global kill switch & settings
+            c.execute("SELECT key, value FROM settings")
+            settings = {r["key"]: r["value"] for r in c.fetchall()}
+            if settings.get("global_kill_switch", "false") == "true":
+                conn.rollback()
+                return {"success": False, "reason": "global_kill_switch_active", "error": "Global kill switch is active."}
+
+            safe_test_mode = settings.get("safe_test_mode", "true") == "true"
+
+            # 3. Duplicate reply prevention
+            if act.get("status") == "replied":
+                conn.rollback()
+                return {
+                    "success": False,
+                    "reason": "already_replied",
+                    "duplicate_blocked": True,
+                    "error": "A reply has already been sent to this comment.",
+                }
+            c.execute(
+                """
+                SELECT id, attempt_status FROM publishing_attempts
+                WHERE LOWER(platform) = ? AND comment_id = ? AND attempt_status IN ('replied', 'test_prepared')
+                ORDER BY id DESC LIMIT 1
+                """,
+                (plat, cid),
+            )
+            dup_att = c.fetchone()
+            if dup_att:
+                conn.rollback()
+                return {
+                    "success": False,
+                    "reason": "duplicate_publishing_attempt",
+                    "duplicate_blocked": True,
+                    "error": "A reply or safe-test send has already been recorded for this comment.",
+                }
+
+            # 4. Verify connected account
+            account_id = act.get("account_id") or ""
+            if account_id:
+                c.execute(
+                    "SELECT account_id, account_name, access_token FROM accounts WHERE LOWER(platform) = ? AND account_id = ? AND is_active = 1",
+                    (plat, account_id),
+                )
+                acct = c.fetchone()
+            else:
+                acct = None
+            if not acct:
+                c.execute(
+                    "SELECT account_id, account_name, access_token FROM accounts WHERE LOWER(platform) = ? AND is_active = 1 LIMIT 1",
+                    (plat,),
+                )
+                acct = c.fetchone()
+
+            if not acct or not (acct["access_token"] or "").strip():
+                conn.rollback()
+                return {
+                    "success": False,
+                    "reason": f"account_disconnected_{plat}",
+                    "error": f"No active {plat.capitalize()} account with valid token connected.",
+                }
+            resolved_account_id = acct["account_id"]
+            access_token = acct["access_token"]
+
+            # 5. Rate limits check
+            commenter_key = f"{plat}:{act.get('author_name') or 'unknown'}"
+            c.execute("SELECT COUNT(*) AS cnt FROM reply_rate_log WHERE replied_at >= ?", (now - 3600,))
+            if c.fetchone()["cnt"] >= MAX_REPLIES_PER_HOUR:
+                conn.rollback()
+                return {"success": False, "reason": "rate_limit_hourly_30", "error": "Hourly reply rate limit reached (30/hr)."}
+            c.execute("SELECT COUNT(*) AS cnt FROM reply_rate_log WHERE replied_at >= ?", (now - 86400,))
+            if c.fetchone()["cnt"] >= MAX_REPLIES_PER_DAY:
+                conn.rollback()
+                return {"success": False, "reason": "rate_limit_daily_100", "error": "Daily reply rate limit reached (100/day)."}
+            c.execute(
+                "SELECT COUNT(*) AS cnt FROM reply_rate_log WHERE commenter_key = ? AND replied_at >= ?",
+                (commenter_key, now - COMMENTER_COOLDOWN_SECONDS),
+            )
+            if c.fetchone()["cnt"] >= 1:
+                conn.rollback()
+                return {"success": False, "reason": "rate_limit_commenter_24h", "error": "24h cooldown active for this commenter."}
+            c.execute("SELECT MAX(replied_at) AS last_ts FROM reply_rate_log")
+            last_row = c.fetchone()
+            if last_row and last_row["last_ts"] is not None and (now - last_row["last_ts"]) < MIN_REPLY_INTERVAL_SECONDS:
+                conn.rollback()
+                return {"success": False, "reason": "rate_limit_interval_120s", "error": "Minimum 120s interval between replies."}
+
+            # Ensure approval_queue row exists for audit/publishing_attempts linkage
+            c.execute(
+                "SELECT id FROM approval_queue WHERE LOWER(platform) = ? AND comment_id = ?",
+                (plat, cid),
+            )
+            aq_row = c.fetchone()
+            if aq_row:
+                aq_id = aq_row["id"]
+            else:
+                c.execute(
+                    """
+                    INSERT INTO approval_queue (
+                        platform, account_id, comment_id, commenter_name, comment_text,
+                        detected_language, detected_intent, suggested_reply, edited_reply, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                    """,
+                    (
+                        plat,
+                        resolved_account_id,
+                        cid,
+                        act.get("author_name"),
+                        act.get("comment_text") or "",
+                        act.get("detected_language"),
+                        act.get("detected_intent"),
+                        text,
+                        text,
+                    ),
+                )
+                aq_id = c.lastrowid
+
+            # 6. Safe Testing Mode: record without external API call
+            if safe_test_mode:
+                c.execute(
+                    """
+                    UPDATE activities
+                    SET reply_text = ?, status = 'test_prepared', reason = 'manual_safe_test_send',
+                        api_error = NULL, replied_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (text, act["id"]),
+                )
+                c.execute(
+                    """
+                    UPDATE approval_queue
+                    SET edited_reply = ?, status = 'approved', approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (text, aq_id),
+                )
+                _record_publishing_attempt_with_cursor(
+                    c,
+                    approval_queue_id=aq_id,
+                    platform=plat,
+                    account_id=resolved_account_id,
+                    comment_id=cid,
+                    final_reply=text,
+                    attempt_status="test_prepared",
+                    validation_result="passed",
+                    target_type=_PLATFORM_TARGET_TYPE.get(plat, "unknown"),
+                )
+                _log_approval_activity_with_cursor(
+                    c,
+                    item={
+                        "id": aq_id,
+                        "platform": plat,
+                        "comment_id": cid,
+                        "comment_text": act.get("comment_text") or "",
+                        "suggested_reply": text,
+                        "edited_reply": text,
+                    },
+                    user_action="inbox_send_safe_test",
+                    validation_result="passed",
+                )
+                c.execute(
+                    "UPDATE inbox_suggestions SET selected_level = ?, updated_at = CURRENT_TIMESTAMP WHERE LOWER(platform) = ? AND comment_id = ?",
+                    (selected_level, plat, cid),
+                )
+                conn.commit()
+                return {
+                    "success": True,
+                    "safe_test_mode": True,
+                    "dispatched": False,
+                    "status": "test_prepared",
+                    "platform": plat,
+                    "comment_id": cid,
+                    "reply_text": text,
+                    "selected_level": selected_level,
+                    "message": "Reply recorded in Safe Testing Mode (no live API call made).",
+                }
+
+            # 7. Live Mode: reserve rate limit and dispatch via platform adapter
+            c.execute(
+                """
+                INSERT INTO reply_rate_log (platform, account_id, comment_id, commenter_key, template_id, replied_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (plat, resolved_account_id, cid, commenter_key, selected_level, now),
+            )
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            return {"success": False, "reason": "db_error", "error": str(e)}
+        finally:
+            conn.close()
+
+    # Outside lock: execute single live API call
+    api_res: Optional[Dict[str, Any]] = None
+    network_error: Optional[str] = None
+    reconciled_sent = False
+
+    try:
+        if plat == "facebook":
+            from facebook_service import FacebookService
+            api_res = FacebookService.send_reply(cid, text, access_token)
+        elif plat == "instagram":
+            from instagram_service import InstagramService
+            api_res = InstagramService.send_reply(cid, text, access_token)
+        elif plat == "youtube":
+            from youtube_service import YouTubeService
+            valid_token = YouTubeService.get_valid_access_token(resolved_account_id) or access_token
+            api_res = YouTubeService.send_reply(cid, text, valid_token)
+            access_token = valid_token
+    except Exception as exc:
+        network_error = str(exc)
+        reconciled_sent = _reconcile_platform_reply(
+            plat, resolved_account_id, act.get("post_id") or "", cid, text, access_token
+        )
+
+    with _approval_lock:
+        conn = get_connection()
+        c = conn.cursor()
+        try:
+            is_confirmed = bool((api_res and "id" in api_res) or reconciled_sent)
+            if is_confirmed:
+                c.execute(
+                    """
+                    UPDATE activities
+                    SET reply_text = ?, status = 'replied', reason = 'manual_inbox_reply',
+                        api_error = NULL, replied_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (text, act["id"]),
+                )
+                c.execute(
+                    """
+                    UPDATE approval_queue
+                    SET edited_reply = ?, status = 'replied', published_at = CURRENT_TIMESTAMP,
+                        publishing_error = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (text, aq_id),
+                )
+                _record_publishing_attempt_with_cursor(
+                    c,
+                    approval_queue_id=aq_id,
+                    platform=plat,
+                    account_id=resolved_account_id,
+                    comment_id=cid,
+                    final_reply=text,
+                    attempt_status="replied",
+                    validation_result="passed",
+                    target_type=_PLATFORM_TARGET_TYPE.get(plat, "unknown"),
+                )
+                _log_approval_activity_with_cursor(
+                    c,
+                    item={
+                        "id": aq_id,
+                        "platform": plat,
+                        "comment_id": cid,
+                        "comment_text": act.get("comment_text") or "",
+                        "suggested_reply": text,
+                        "edited_reply": text,
+                    },
+                    user_action="inbox_send_live",
+                    validation_result="passed",
+                )
+                c.execute(
+                    "UPDATE inbox_suggestions SET selected_level = ?, updated_at = CURRENT_TIMESTAMP WHERE LOWER(platform) = ? AND comment_id = ?",
+                    (selected_level, plat, cid),
+                )
+                conn.commit()
+                return {
+                    "success": True,
+                    "safe_test_mode": False,
+                    "dispatched": True,
+                    "reconciled": reconciled_sent,
+                    "status": "replied",
+                    "platform": plat,
+                    "comment_id": cid,
+                    "reply_text": text,
+                    "selected_level": selected_level,
+                    "platform_response": api_res or {},
+                }
+
+            # Uncertain network outcome vs explicit API rejection
+            c.execute("DELETE FROM reply_rate_log WHERE comment_id = ?", (cid,))
+            if network_error:
+                c.execute(
+                    """
+                    UPDATE activities
+                    SET status = 'reconciliation_required', api_error = ?, reason = 'uncertain_network_outcome'
+                    WHERE id = ?
+                    """,
+                    (network_error, act["id"]),
+                )
+                _record_publishing_attempt_with_cursor(
+                    c,
+                    approval_queue_id=aq_id,
+                    platform=plat,
+                    account_id=resolved_account_id,
+                    comment_id=cid,
+                    final_reply=text,
+                    attempt_status="uncertain_network",
+                    validation_result="passed",
+                    error_details=network_error,
+                    target_type=_PLATFORM_TARGET_TYPE.get(plat, "unknown"),
+                )
+                conn.commit()
+                return {
+                    "success": False,
+                    "safe_test_mode": False,
+                    "dispatched": False,
+                    "reconciliation_required": True,
+                    "status": "reconciliation_required",
+                    "reason": "uncertain_network_outcome",
+                    "error": f"Network outcome uncertain ({network_error}). Platform state checked; manual verification required before retrying.",
+                }
+
+            err_msg = str((api_res or {}).get("error") or "Platform API rejected reply")
+            c.execute(
+                "UPDATE activities SET status = 'failed', api_error = ? WHERE id = ?",
+                (err_msg, act["id"]),
+            )
+            c.execute(
+                "UPDATE approval_queue SET status = 'failed', publishing_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (err_msg, aq_id),
+            )
+            _record_publishing_attempt_with_cursor(
+                c,
+                approval_queue_id=aq_id,
+                platform=plat,
+                account_id=resolved_account_id,
+                comment_id=cid,
+                final_reply=text,
+                attempt_status="failed",
+                validation_result="passed",
+                error_details=err_msg,
+                target_type=_PLATFORM_TARGET_TYPE.get(plat, "unknown"),
+            )
+            conn.commit()
+            return {
+                "success": False,
+                "safe_test_mode": False,
+                "dispatched": False,
+                "status": "failed",
+                "reason": "platform_api_error",
+                "error": err_msg,
+            }
+        finally:
+            conn.close()

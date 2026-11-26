@@ -193,6 +193,19 @@ class InstagramService:
             media_id = media.get("id")
             if not media_id:
                 continue
+            try:
+                database.upsert_social_post(
+                    platform="instagram",
+                    account_id=ig_user_id,
+                    post_id=media_id,
+                    caption=media.get("caption") or "",
+                    thumbnail_url=media.get("thumbnail_url") or media.get("media_url") or "",
+                    permalink=media.get("permalink") or "",
+                    media_type=media.get("media_type") or "",
+                    post_date=media.get("timestamp") or "",
+                )
+            except Exception:
+                pass
             comments_url = f"{GRAPH_API_BASE}/{media_id}/comments"
             c_params = {
                 "access_token": access_token,

@@ -26,16 +26,26 @@ function switchTab(tabId) {
     view.classList.toggle('active', view.id === `view-${tabId}`);
   });
 
+  const autopostEl = document.getElementById('tab-autopost');
+  if (autopostEl) {
+    autopostEl.style.display = tabId === 'autopost' ? 'block' : 'none';
+  }
+
   const titles = {
-    dashboard: 'Dashboard',
+    dashboard: 'Home',
     accounts: 'Connected Accounts',
-    autoreply: 'Auto Reply Configuration',
-    activity: 'Activity Log',
-    leads: 'Lead Management'
+    autoreply: 'Community & Auto Reply',
+    activity: 'Insights & Activity',
+    leads: 'Lead Management',
+    autopost: 'Create & Schedule',
+    publish: 'Publishing'
   };
-  document.getElementById('page-title').textContent = titles[tabId] || 'Dashboard';
+  document.getElementById('page-title').textContent = titles[tabId] || 'Publishing';
   if (tabId === 'leads' && typeof loadLeads === 'function') {
     loadLeads();
+  }
+  if (tabId === 'autoreply' && aqState.subtab === 'inbox' && typeof window.initCommunityInbox === 'function') {
+    window.initCommunityInbox();
   }
 }
 
@@ -51,6 +61,9 @@ async function loadStatus() {
     state.ytAutoReplyEnabled = !!data.yt_auto_reply_enabled;
     state.safeTestMode = data.safe_test_mode;
     state.stats = data.stats;
+    if (window.GSPUI && typeof window.GSPUI.initTheme === 'function') {
+      window.GSPUI.initTheme(data.ui_theme);
+    }
     
     updateUI();
   } catch (err) {
@@ -83,16 +96,16 @@ function updateUI() {
     if (state.safeTestMode) {
       safeModeBanner.classList.add('safe-mode-enabled');
       safeModeBanner.classList.remove('safe-mode-disabled');
-      safeModeBanner.style.borderColor = 'rgba(245, 158, 11, 0.45)';
-      safeModeBanner.style.background = 'rgba(245, 158, 11, 0.12)';
-      safeModeBanner.style.color = '#fbbf24';
+      safeModeBanner.style.borderColor = 'var(--status-warning-border)';
+      safeModeBanner.style.background = 'var(--status-warning-bg)';
+      safeModeBanner.style.color = 'var(--status-warning)';
       safeModeBannerText.textContent = 'SAFE TESTING MODE – LIVE PUBLISHING DISABLED';
     } else {
       safeModeBanner.classList.remove('safe-mode-enabled');
       safeModeBanner.classList.add('safe-mode-disabled');
-      safeModeBanner.style.borderColor = 'rgba(239, 68, 68, 0.55)';
-      safeModeBanner.style.background = 'rgba(239, 68, 68, 0.14)';
-      safeModeBanner.style.color = '#f87171';
+      safeModeBanner.style.borderColor = 'var(--status-danger-border)';
+      safeModeBanner.style.background = 'var(--status-danger-bg)';
+      safeModeBanner.style.color = 'var(--status-danger)';
       safeModeBannerText.textContent = 'LIVE PUBLISHING ENABLED – POSTS WILL BE SENT TO CONNECTED PLATFORMS';
     }
   }
@@ -212,14 +225,17 @@ function renderActivities(activities) {
     return;
   }
 
+  const esc = window.GSPUI ? window.GSPUI.escapeHtml : (s) => String(s ?? '');
+  const badge = (st) => window.GSPUI ? window.GSPUI.statusBadge(st) : `<span class="badge ${st === 'replied' ? 'on' : 'off'}">${esc(st)}</span>`;
+
   tbody.innerHTML = activities.map(item => `
     <tr>
-      <td><strong>${item.platform}</strong></td>
-      <td>${item.author_name || 'Anonymous'}</td>
-      <td>${item.comment_text}</td>
-      <td>${item.detected_language} / ${item.detected_intent}</td>
-      <td>${item.reply_text || '—'}</td>
-      <td><span class="badge ${item.status === 'replied' ? 'on' : 'off'}">${item.status}</span></td>
+      <td><strong>${esc(item.platform)}</strong></td>
+      <td>${esc(item.author_name || 'Anonymous')}</td>
+      <td>${esc(item.comment_text)}</td>
+      <td>${esc(item.detected_language)} / ${esc(item.detected_intent)}</td>
+      <td>${esc(item.reply_text || '—')}</td>
+      <td>${badge(item.status)}</td>
       <td>${new Date(item.created_at).toLocaleTimeString()}</td>
     </tr>
   `).join('');
@@ -705,8 +721,20 @@ async function runSimulatorTest() {
 function initApp() {
   // Navigation
   document.querySelectorAll('.nav-item').forEach(btn => {
-    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    btn.addEventListener('click', () => {
+      switchTab(btn.dataset.tab);
+      const sidebar = document.querySelector('.sidebar');
+      if (sidebar) sidebar.classList.remove('mobile-open');
+    });
   });
+
+  const mobileToggle = document.getElementById('sidebar-mobile-toggle');
+  if (mobileToggle) {
+    mobileToggle.addEventListener('click', () => {
+      const sidebar = document.querySelector('.sidebar');
+      if (sidebar) sidebar.classList.toggle('mobile-open');
+    });
+  }
 
   // Toggles
   const masterToggle = document.getElementById('master-toggle');
@@ -1553,7 +1581,7 @@ async function syncYouTube() {
 // Priority 2B: Approval Queue UI
 // ==========================================
 const aqState = {
-  subtab: 'automatic',
+  subtab: 'inbox',
   platform: 'all',
   status: 'pending',
   items: [],
@@ -1630,14 +1658,18 @@ function switchAutoReplySubtab(subtab) {
     btn.classList.toggle('active', active);
     btn.setAttribute('aria-selected', active ? 'true' : 'false');
   });
+  const inboxView = document.getElementById('subview-inbox');
   const autoView = document.getElementById('subview-automatic');
   const approvalView = document.getElementById('subview-approval');
   const platformSettingsView = document.getElementById('subview-platform-settings');
+  if (inboxView) inboxView.classList.toggle('hidden', subtab !== 'inbox');
   if (autoView) autoView.classList.toggle('hidden', subtab !== 'automatic');
   if (approvalView) approvalView.classList.toggle('hidden', subtab !== 'approval');
   if (platformSettingsView) platformSettingsView.classList.toggle('hidden', subtab !== 'platform-settings');
 
-  if (subtab === 'approval') {
+  if (subtab === 'inbox' && typeof window.initCommunityInbox === 'function') {
+    window.initCommunityInbox();
+  } else if (subtab === 'approval') {
     aqUpdateSafeModePill();
     loadApprovalQueue();
   } else if (subtab === 'platform-settings') {
@@ -2103,29 +2135,6 @@ async function approveQueueItem(queueId) {
   }
 }
 
-async function prepareTestReply(queueId) {
-  aqState.processingIds.add(queueId);
-  renderApprovalQueue();
-  try {
-    const res = await fetch(`/api/approval-queue/${queueId}/prepare-publish`, { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data.detail || 'Could not prepare test reply.');
-    }
-    if (data.attempt_status === 'test_prepared') {
-      aqShowFeedback('Test reply prepared (Safe Testing Mode ON — not published publicly).', 'success');
-    } else {
-      aqShowFeedback(`Blocked: ${data.reason || 'ineligible'}`, 'error');
-    }
-    await loadApprovalQueue();
-  } catch (err) {
-    aqShowFeedback(err.message || 'Failed to prepare test reply.', 'error');
-  } finally {
-    aqState.processingIds.delete(queueId);
-    renderApprovalQueue();
-  }
-}
-
 function promptRejectQueueItem(queueId) {
   aqState.confirmRejectId = queueId;
   aqState.editingId = null;
@@ -2163,29 +2172,6 @@ async function confirmRejectQueueItem(queueId) {
     aqShowFeedback('Comment rejected and moved to queue history.', 'success');
   } catch (err) {
     aqShowFeedback(err.message || 'Failed to reject item.', 'error');
-  } finally {
-    aqState.processingIds.delete(queueId);
-    renderApprovalQueue();
-  }
-}
-
-async function prepareTestReply(queueId) {
-  aqState.processingIds.add(queueId);
-  renderApprovalQueue();
-  try {
-    const res = await fetch(`/api/approval-queue/${queueId}/prepare-publish`, { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data.detail || 'Could not prepare test reply.');
-    }
-    if (data.attempt_status === 'test_prepared') {
-      aqShowFeedback('Test reply prepared (Safe Testing Mode ON — not published publicly).', 'success');
-    } else {
-      aqShowFeedback(`Blocked: ${data.reason || 'ineligible'}`, 'error');
-    }
-    await loadApprovalQueue();
-  } catch (err) {
-    aqShowFeedback(err.message || 'Failed to prepare test reply.', 'error');
   } finally {
     aqState.processingIds.delete(queueId);
     renderApprovalQueue();
@@ -2278,14 +2264,15 @@ async function loadLeads() {
         tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 24px; color: var(--text-muted);">No leads found.</td></tr>';
         return;
       }
-      const esc = typeof escapeHtml === 'function' ? escapeHtml : (s) => String(s ?? '');
+      const esc = window.GSPUI ? window.GSPUI.escapeHtml : (typeof escapeHtml === 'function' ? escapeHtml : (s) => String(s ?? ''));
+      const badge = (st) => window.GSPUI ? window.GSPUI.statusBadge(st) : esc(st);
       tbody.innerHTML = leads.map(lead => `
         <tr>
           <td>${esc(lead.business_type)}</td>
           <td>${esc(lead.platform)}</td>
           <td>${esc(lead.customer_name || lead.customer_username || 'Unknown')}</td>
           <td>${esc(lead.enquiry_category)}</td>
-          <td>${esc(lead.lead_status)}</td>
+          <td>${badge(lead.lead_status)}</td>
           <td>${esc(lead.priority)}</td>
           <td>${esc(lead.original_message)}</td>
         </tr>
@@ -2518,31 +2505,150 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Posting Schedule slots
+  // Buffer-style Weekly Posting Schedule
+  const WEEKLY_COLUMNS = [
+    { dow: 6, label: "Sunday" },
+    { dow: 0, label: "Monday" },
+    { dow: 1, label: "Tuesday" },
+    { dow: 2, label: "Wednesday" },
+    { dow: 3, label: "Thursday" },
+    { dow: 4, label: "Friday" },
+    { dow: 5, label: "Saturday" },
+  ];
+
+  let currentScheduleSettings = {
+    account_key: "facebook:default",
+    timezone: "Asia/Kolkata",
+    weekly_goal: 14,
+    enabled_days: [0, 1, 2, 3, 4, 5, 6],
+  };
+
+  function showScheduleFeedback(msg, isError = false) {
+    const el = document.getElementById("schedule-feedback");
+    if (!el) return;
+    el.textContent = msg;
+    el.className = "schedule-feedback" + (isError ? " error" : "");
+    el.style.display = "inline-block";
+    clearTimeout(el._hideTimer);
+    el._hideTimer = setTimeout(() => {
+      el.style.display = "none";
+    }, 2800);
+  }
+
+  function formatTime12h(hhmm) {
+    const [hStr, mStr] = (hhmm || "09:00").split(":");
+    let h = parseInt(hStr, 10);
+    const m = mStr || "00";
+    const ampm = h >= 12 ? "PM" : "AM";
+    h = h % 12 || 12;
+    return `${h}:${m} ${ampm}`;
+  }
+
+  function to24h(hour12, minute, ampm) {
+    let h = parseInt(hour12, 10);
+    if (ampm === "AM") {
+      if (h === 12) h = 0;
+    } else {
+      if (h !== 12) h += 12;
+    }
+    return `${String(h).padStart(2, "0")}:${minute}`;
+  }
+
+  async function saveScheduleSettings(patch) {
+    const accountKey = document.getElementById("slot-account-select").value;
+    const res = await fetch("/api/auto-post/schedule-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ account_key: accountKey, ...patch }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showScheduleFeedback(err.detail || "Failed to save settings", true);
+      return null;
+    }
+    currentScheduleSettings = await res.json();
+    showScheduleFeedback("Schedule settings saved");
+    return currentScheduleSettings;
+  }
+
   async function loadPostingSlots() {
     const accountKey = document.getElementById("slot-account-select").value;
-    const res = await fetch(`/api/auto-post/slots?account_key=${encodeURIComponent(accountKey)}`);
-    const data = await res.json();
-    const listEl = document.getElementById("posting-slots-list");
-    if (!data.slots || data.slots.length === 0) {
-      listEl.innerHTML = `<p style="opacity:0.7;">No custom slots configured for ${accountKey}. Default daily slots (09:00, 18:00) will be used.</p>`;
-      return;
+    const [settingsRes, slotsRes] = await Promise.all([
+      fetch(`/api/auto-post/schedule-settings?account_key=${encodeURIComponent(accountKey)}`),
+      fetch(`/api/auto-post/slots?account_key=${encodeURIComponent(accountKey)}`),
+    ]);
+    if (settingsRes.ok) {
+      currentScheduleSettings = await settingsRes.json();
     }
-    listEl.innerHTML = data.slots
-      .map(
-        (s) => `
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border:1px solid rgba(255,255,255,0.1);border-radius:6px;">
-          <span><strong>${DAY_NAMES[String(s.day_of_week)] || "Day " + s.day_of_week}</strong> at <code>${s.slot_time}</code></span>
-          <button type="button" class="btn btn-secondary delete-slot-btn" data-id="${s.id}" style="padding:4px 10px;">Remove</button>
-        </div>
-      `
-      )
-      .join("");
+    const slotsData = await slotsRes.json();
+    const allSlots = slotsData.slots || [];
 
-    listEl.querySelectorAll(".delete-slot-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        await fetch(`/api/auto-post/slots/${btn.dataset.id}`, { method: "DELETE" });
+    const tzSelect = document.getElementById("schedule-timezone-select");
+    if (tzSelect && currentScheduleSettings.timezone) {
+      tzSelect.value = currentScheduleSettings.timezone;
+    }
+    const goalEl = document.getElementById("weekly-goal-value");
+    if (goalEl) {
+      goalEl.textContent = String(currentScheduleSettings.weekly_goal ?? 14);
+    }
+
+    const enabledSet = new Set(currentScheduleSettings.enabled_days || [0, 1, 2, 3, 4, 5, 6]);
+    const gridEl = document.getElementById("weekly-schedule-grid");
+    if (!gridEl) return;
+
+    gridEl.innerHTML = WEEKLY_COLUMNS.map(({ dow, label }) => {
+      const isEnabled = enabledSet.has(dow);
+      const daySlots = allSlots
+        .filter((s) => Number(s.day_of_week) === dow || Number(s.day_of_week) === -1)
+        .sort((a, b) => (a.slot_time || "").localeCompare(b.slot_time || ""));
+
+      const slotsHtml = daySlots.length
+        ? daySlots
+            .map(
+              (s) => `
+              <div class="day-slot-pill">
+                <span>${formatTime12h(s.slot_time)}</span>
+                <button type="button" class="day-slot-remove" data-id="${s.id}" title="Remove slot">&times;</button>
+              </div>
+            `
+            )
+            .join("")
+        : `<div class="day-empty-label">${isEnabled ? "No slots" : "Disabled"}</div>`;
+
+      return `
+        <div class="day-column ${isEnabled ? "" : "disabled"}" data-dow="${dow}">
+          <div class="day-column-header">
+            <span class="day-column-title">${label}</span>
+            <label class="day-toggle-switch" title="Enable/disable ${label}">
+              <input type="checkbox" class="day-toggle-input" data-dow="${dow}" ${isEnabled ? "checked" : ""} />
+              <span class="day-toggle-slider"></span>
+            </label>
+          </div>
+          <div class="day-slots-list">${slotsHtml}</div>
+        </div>
+      `;
+    }).join("");
+
+    gridEl.querySelectorAll(".day-toggle-input").forEach((chk) => {
+      chk.addEventListener("change", async () => {
+        const dow = parseInt(chk.dataset.dow, 10);
+        const nextSet = new Set(currentScheduleSettings.enabled_days || []);
+        if (chk.checked) nextSet.add(dow);
+        else nextSet.delete(dow);
+        await saveScheduleSettings({ enabled_days: Array.from(nextSet).sort((a, b) => a - b) });
         loadPostingSlots();
+      });
+    });
+
+    gridEl.querySelectorAll(".day-slot-remove").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const res = await fetch(`/api/auto-post/slots/${btn.dataset.id}`, { method: "DELETE" });
+        if (res.ok) {
+          showScheduleFeedback("Slot removed");
+          loadPostingSlots();
+        } else {
+          showScheduleFeedback("Failed to remove slot", true);
+        }
       });
     });
   }
@@ -2550,25 +2656,91 @@ document.addEventListener('DOMContentLoaded', () => {
   const slotAccSel = document.getElementById("slot-account-select");
   if (slotAccSel) slotAccSel.addEventListener("change", loadPostingSlots);
 
+  const tzSelect = document.getElementById("schedule-timezone-select");
+  if (tzSelect) {
+    tzSelect.addEventListener("change", async () => {
+      await saveScheduleSettings({ timezone: tzSelect.value });
+    });
+  }
+
+  const goalDecBtn = document.getElementById("goal-decrease-btn");
+  if (goalDecBtn) {
+    goalDecBtn.addEventListener("click", async () => {
+      const next = Math.max(1, (currentScheduleSettings.weekly_goal || 14) - 1);
+      await saveScheduleSettings({ weekly_goal: next });
+      loadPostingSlots();
+    });
+  }
+
+  const goalIncBtn = document.getElementById("goal-increase-btn");
+  if (goalIncBtn) {
+    goalIncBtn.addEventListener("click", async () => {
+      const next = Math.min(500, (currentScheduleSettings.weekly_goal || 14) + 1);
+      await saveScheduleSettings({ weekly_goal: next });
+      loadPostingSlots();
+    });
+  }
+
   const addSlotBtn = document.getElementById("add-slot-btn");
   if (addSlotBtn) {
     addSlotBtn.addEventListener("click", async () => {
       const accountKey = document.getElementById("slot-account-select").value;
       const dayOfWeek = parseInt(document.getElementById("slot-day-select").value, 10);
-      const slotTime = document.getElementById("slot-time-input").value;
-      const existingRes = await fetch(`/api/auto-post/slots?account_key=${encodeURIComponent(accountKey)}`);
-      const existingData = await existingRes.json();
-      const slots = (existingData.slots || []).map((s) => ({
-        day_of_week: s.day_of_week,
-        slot_time: s.slot_time,
-      }));
-      slots.push({ day_of_week: dayOfWeek, slot_time: slotTime });
-      await fetch("/api/auto-post/slots", {
+      const hour = document.getElementById("slot-hour-select").value;
+      const minute = document.getElementById("slot-minute-select").value;
+      const ampm = document.getElementById("slot-ampm-select").value;
+      const slotTime = to24h(hour, minute, ampm);
+
+      const res = await fetch("/api/auto-post/slots/add", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ account_key: accountKey, slots }),
+        body: JSON.stringify({ account_key: accountKey, day_of_week: dayOfWeek, slot_time: slotTime }),
       });
-      loadPostingSlots();
+      if (res.ok) {
+        showScheduleFeedback("Posting slot added");
+        loadPostingSlots();
+      } else {
+        showScheduleFeedback("Failed to add posting slot", true);
+      }
+    });
+  }
+
+  const genSlotsBtn = document.getElementById("generate-slots-btn");
+  if (genSlotsBtn) {
+    genSlotsBtn.addEventListener("click", async () => {
+      const mode = document.getElementById("generate-slots-select").value;
+      if (!mode) return;
+      const confirmMsg =
+        mode === "clear"
+          ? "Clear all posting slots for this channel?"
+          : "This will replace existing posting slots for the target days. Continue?";
+      const confirmed = window.GSPUI
+        ? await window.GSPUI.confirm({
+            title: "Confirm Schedule Update",
+            message: confirmMsg,
+            confirmText: "Continue",
+            variant: mode === "clear" ? "danger" : "primary"
+          })
+        : window.confirm(confirmMsg);
+      if (!confirmed) return;
+
+      const accountKey = document.getElementById("slot-account-select").value;
+      const res = await fetch("/api/auto-post/slots/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          account_key: accountKey,
+          mode,
+          days: mode === "regenerate_days" ? currentScheduleSettings.enabled_days : null,
+        }),
+      });
+      if (res.ok) {
+        showScheduleFeedback(mode === "clear" ? "All slots cleared" : "Posting slots generated");
+        document.getElementById("generate-slots-select").value = "";
+        loadPostingSlots();
+      } else {
+        showScheduleFeedback("Failed to generate slots", true);
+      }
     });
   }
 
@@ -2617,6 +2789,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return true;
     });
 
+    if (!grid) return;
     if (filteredPosts.length === 0) {
       grid.innerHTML = `<p style="opacity:0.7;">No scheduled posts match the selected filters.</p>`;
       return;
@@ -2831,3 +3004,718 @@ async function checkAccountHealth(platform = null) {
     });
   }
 }
+
+
+// =========================================================================
+// Buffer-Style Publishing Workspace (Gokul Publisher)
+// =========================================================================
+(function () {
+  const PUB_STATE = {
+    channels: [],
+    posts: [],
+    counts: { queue: 0, drafts: 0, approvals: 0, sent: 0, failed: 0, total: 0 },
+    selectedChannel: "all",
+    activeTab: "queue",       // queue | drafts | approvals | sent
+    activeView: "list",       // list | calendar | board
+    calMode: "month",         // month | week | day
+    calCursor: new Date(),
+    filters: {
+      search: "",
+      platform: "",
+      status: "",
+      category: "",
+      dateFrom: "",
+      dateTo: "",
+    },
+    pendingConfirmPostId: null,
+  };
+
+  const PLATFORM_ICON = { facebook: "📘", instagram: "📸", youtube: "▶️" };
+  const QUEUE_SET = new Set(["scheduled", "publishing", "uploading", "processing", "retry_waiting", "auth_required", "failed"]);
+  const SENT_SET = new Set(["published", "published_safe_mode"]);
+  const DRAFT_SET = new Set(["draft"]);
+  const APPROVAL_SET = new Set(["pending_approval"]);
+
+  function esc(str) {
+    return String(str ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function fmtDateIST(iso) {
+    if (!iso) return "Unscheduled";
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return d.toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      });
+    } catch {
+      return iso;
+    }
+  }
+
+  function fmtTimeIST(iso) {
+    if (!iso) return "--:--";
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso.slice(11, 16) || "--:--";
+      return d.toLocaleTimeString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+      });
+    } catch {
+      return "--:--";
+    }
+  }
+
+  function dateKeyIST(iso) {
+    if (!iso) return "Unscheduled";
+    return String(iso).slice(0, 10);
+  }
+
+  async function fetchWorkspace() {
+    const ak = PUB_STATE.selectedChannel === "all" ? "" : `?account_key=${encodeURIComponent(PUB_STATE.selectedChannel)}`;
+    try {
+      const res = await fetch(`/api/publishing/workspace${ak}`);
+      if (!res.ok) throw new Error("Failed to load publishing workspace");
+      const data = await res.json();
+      PUB_STATE.channels = data.channels || [];
+      PUB_STATE.posts = data.posts || [];
+      PUB_STATE.counts = data.counts || { queue: 0, drafts: 0, approvals: 0, sent: 0 };
+      renderAll();
+    } catch (err) {
+      console.error("Publishing workspace error:", err);
+    }
+  }
+
+  function getFilteredPosts(ignoreTab = false) {
+    const f = PUB_STATE.filters;
+    const q = f.search.trim().toLowerCase();
+    return PUB_STATE.posts.filter((p) => {
+      if (!ignoreTab) {
+        const st = p.status || "scheduled";
+        if (PUB_STATE.activeTab === "queue" && !QUEUE_SET.has(st)) return false;
+        if (PUB_STATE.activeTab === "drafts" && !DRAFT_SET.has(st)) return false;
+        if (PUB_STATE.activeTab === "approvals" && !APPROVAL_SET.has(st)) return false;
+        if (PUB_STATE.activeTab === "sent" && !SENT_SET.has(st)) return false;
+      }
+      if (f.platform && p.platform !== f.platform) return false;
+      if (f.status) {
+        if (f.status === "published" && !SENT_SET.has(p.status)) return false;
+        else if (f.status === "failed" && !["failed", "retry_waiting", "auth_required"].includes(p.status)) return false;
+        else if (f.status !== "published" && f.status !== "failed" && p.status !== f.status) return false;
+      }
+      if (f.category && p.category !== f.category) return false;
+      if (f.dateFrom && dateKeyIST(p.scheduled_at) < f.dateFrom) return false;
+      if (f.dateTo && dateKeyIST(p.scheduled_at) > f.dateTo) return false;
+      if (q) {
+        const hay = `${p.caption || ""} ${p.original_filename || ""} ${p.zodiac_english || ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }
+
+  function renderSidebar() {
+    const list = document.getElementById("pub-channel-list");
+    if (!list) return;
+    const totalQ = PUB_STATE.channels.reduce((s, c) => s + (c.queued_count || 0), 0);
+    const totalP = PUB_STATE.channels.reduce((s, c) => s + (c.published_count || 0), 0);
+
+    let html = `
+      <div class="pub-channel-item ${PUB_STATE.selectedChannel === "all" ? "active" : ""}" data-channel="all">
+        <div class="pub-ch-left">
+          <div class="pub-ch-icon">🌐</div>
+          <div>
+            <div class="pub-ch-name">All Channels</div>
+            <div class="pub-ch-sub"><span class="pub-dot connected"></span> Unified View</div>
+          </div>
+        </div>
+        <div class="pub-ch-counts"><span>${totalQ} Q</span><span>${totalP} S</span></div>
+      </div>
+    `;
+
+    for (const ch of PUB_STATE.channels) {
+      const icon = PLATFORM_ICON[ch.platform] || "📢";
+      html += `
+        <div class="pub-channel-item ${PUB_STATE.selectedChannel === ch.account_key ? "active" : ""}" data-channel="${esc(ch.account_key)}">
+          <div class="pub-ch-left">
+            <div class="pub-ch-icon">${icon}</div>
+            <div style="min-width:0;">
+              <div class="pub-ch-name">${esc(ch.name)}</div>
+              <div class="pub-ch-sub"><span class="pub-dot ${ch.connected ? "connected" : "disconnected"}"></span> ${ch.connected ? "Connected" : "Not Connected"}</div>
+            </div>
+          </div>
+          <div class="pub-ch-counts"><span>${ch.queued_count} Q</span><span>${ch.published_count} S</span></div>
+        </div>
+      `;
+    }
+    list.innerHTML = html;
+    list.querySelectorAll(".pub-channel-item").forEach((el) => {
+      el.addEventListener("click", () => {
+        PUB_STATE.selectedChannel = el.dataset.channel;
+        fetchWorkspace();
+      });
+    });
+  }
+
+  function renderHeaderAndTabs() {
+    const avatar = document.getElementById("pub-header-avatar");
+    const name = document.getElementById("pub-header-name");
+    const tz = document.getElementById("pub-header-tz");
+    const goalText = document.getElementById("pub-header-goal-text");
+    const goalBar = document.getElementById("pub-header-goal-bar");
+
+    if (PUB_STATE.selectedChannel === "all") {
+      if (avatar) avatar.textContent = "🌐";
+      if (name) name.textContent = "All Channels";
+      const totalGoal = PUB_STATE.channels.reduce((s, c) => s + (c.weekly_goal || 14), 0) || 42;
+      const totalProg = PUB_STATE.channels.reduce((s, c) => s + (c.weekly_progress || 0), 0);
+      if (tz) tz.textContent = "🕒 Asia/Kolkata";
+      if (goalText) goalText.textContent = `🎯 Weekly Goal: ${totalProg} / ${totalGoal}`;
+      if (goalBar) goalBar.style.width = `${Math.min(100, Math.round((totalProg / totalGoal) * 100))}%`;
+    } else {
+      const ch = PUB_STATE.channels.find((c) => c.account_key === PUB_STATE.selectedChannel);
+      if (ch) {
+        if (avatar) avatar.textContent = PLATFORM_ICON[ch.platform] || "📢";
+        if (name) name.textContent = ch.name;
+        if (tz) tz.textContent = `🕒 ${ch.timezone || "Asia/Kolkata"}`;
+        if (goalText) goalText.textContent = `🎯 Weekly Goal: ${ch.weekly_progress} / ${ch.weekly_goal}`;
+        if (goalBar) goalBar.style.width = `${Math.min(100, Math.round((ch.weekly_progress / (ch.weekly_goal || 1)) * 100))}%`;
+      }
+    }
+
+    const c = PUB_STATE.counts;
+    const setCnt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = String(val ?? 0); };
+    setCnt("pub-count-queue", c.queue);
+    setCnt("pub-count-drafts", c.drafts);
+    setCnt("pub-count-approvals", c.approvals);
+    setCnt("pub-count-sent", c.sent);
+    const rwCount = PUB_STATE.posts.filter((p) => p.status === "retry_waiting").length;
+    const arCount = PUB_STATE.posts.filter((p) => p.status === "auth_required").length;
+    setCnt("summary-count-retry-waiting", rwCount);
+    setCnt("summary-count-auth-required", arCount);
+  }
+
+  function renderCard(p) {
+    const icon = PLATFORM_ICON[p.platform] || "📢";
+    const st = p.status || "scheduled";
+    const isSent = SENT_SET.has(st);
+    const isDraft = DRAFT_SET.has(st);
+    const isApproval = APPROVAL_SET.has(st);
+    const canPublishNow = !isSent && st !== "cancelled";
+    const canReschedule = ["scheduled", "failed", "retry_waiting", "draft", "pending_approval"].includes(st);
+    const canMoveDraft = !isSent && !isDraft;
+    const canRemove = !isSent && st !== "cancelled";
+
+    const multiCount = p.video_id ? PUB_STATE.posts.filter((x) => x.video_id === p.video_id).length : 1;
+    const multiBadge = multiCount > 1 ? `<span class="pub-meta-pill" title="Shared across ${multiCount} destination jobs">🔗 ${multiCount} platforms</span>` : "";
+    const statusHtml = window.GSPUI ? window.GSPUI.statusBadge(st) : `<span class="pub-badge pub-badge-${esc(st)}">${esc(st.replace(/_/g, " "))}</span>`;
+    const mediaSrc = (p.batch_id && p.original_filename)
+      ? `/api/auto-post/media/${encodeURIComponent(p.batch_id)}/${encodeURIComponent(p.original_filename)}`
+      : "";
+    const mediaThumbHtml = mediaSrc
+      ? `<div class="pub-card-thumb pub-card-thumb-right"><video src="${mediaSrc}#t=0.5" muted preload="metadata" playsinline onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"></video><span class="pub-thumb-fallback" style="display:none;">🎬</span></div>`
+      : `<div class="pub-card-thumb pub-card-thumb-right"><span class="pub-thumb-fallback">🎬</span></div>`;
+
+    return `
+      <div class="pub-card" draggable="true" data-post-id="${p.id}">
+        <div class="pub-card-top">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <span>${icon}</span>
+            <strong>${esc(p.account_key)}</strong>
+            ${statusHtml}
+            ${multiBadge}
+          </div>
+          <span class="pub-card-id">#${p.id}</span>
+        </div>
+        <div class="pub-card-media-row pub-card-media-row-right">
+          <div style="min-width:0;flex:1;">
+            <div class="pub-card-title">${esc(p.original_filename || p.zodiac_english || "Untitled")}</div>
+            <div class="pub-card-caption">${esc(p.caption || "(No caption)")}</div>
+          </div>
+          ${mediaThumbHtml}
+        </div>
+        <div class="pub-card-meta">
+          <span>📅 ${fmtDateIST(p.scheduled_at)}</span>
+          <span>📁 ${esc(p.category || "General")}</span>
+          <span>🕒 Created: ${fmtDateIST(p.created_at)}</span>
+        </div>
+        ${p.error_message ? `<div class="pub-card-error">⚠ ${esc(p.error_message)}</div>` : ""}
+        <div class="pub-card-actions">
+          ${canPublishNow ? `<button type="button" class="btn btn-primary btn-sm pub-act-publish" data-id="${p.id}">Publish Now</button>` : ""}
+          <button type="button" class="btn btn-secondary btn-sm pub-act-edit" data-id="${p.id}">Edit</button>
+          ${canReschedule ? `<button type="button" class="btn btn-secondary btn-sm pub-act-resched" data-id="${p.id}">Reschedule</button>` : ""}
+          ${canMoveDraft ? `<button type="button" class="btn btn-secondary btn-sm pub-act-draft" data-id="${p.id}">Move to Draft</button>` : ""}
+          ${isApproval ? `<button type="button" class="btn btn-primary btn-sm pub-act-approve" data-id="${p.id}">Approve</button>` : ""}
+          ${canRemove ? `<button type="button" class="btn btn-secondary btn-sm pub-act-remove" data-id="${p.id}">Remove from Queue</button>` : ""}
+          <button type="button" class="btn btn-secondary btn-sm pub-act-details" data-id="${p.id}">View Details</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderListView() {
+    const container = document.getElementById("pub-view-list");
+    if (!container) return;
+    const posts = getFilteredPosts();
+    if (!posts.length) {
+      container.innerHTML = window.GSPUI
+        ? window.GSPUI.emptyState({
+            icon: "📅",
+            title: `No posts in ${PUB_STATE.activeTab}`,
+            description: "Adjust your filters or create a new post to populate this view."
+          })
+        : `<div style="padding:36px;text-align:center;opacity:0.7;">No posts in ${esc(PUB_STATE.activeTab)} matching current filters.</div>`;
+      return;
+    }
+
+    const groups = {};
+    for (const p of posts) {
+      const k = dateKeyIST(p.scheduled_at);
+      if (!groups[k]) groups[k] = [];
+      groups[k].push(p);
+    }
+
+    let html = "";
+    for (const dateKey of Object.keys(groups).sort()) {
+      html += `<div class="pub-date-group"><div class="pub-date-header">${esc(dateKey)}</div>`;
+      for (const p of groups[dateKey]) {
+        html += `
+          <div class="pub-timeline-row">
+            <div class="pub-timeline-time">${fmtTimeIST(p.scheduled_at)}</div>
+            <div>${renderCard(p)}</div>
+          </div>
+        `;
+      }
+      html += `</div>`;
+    }
+    container.innerHTML = html;
+    bindCardActions(container);
+  }
+
+  function renderCalendarView() {
+    const container = document.getElementById("pub-view-calendar");
+    if (!container) return;
+    const posts = getFilteredPosts();
+    const cur = new Date(PUB_STATE.calCursor);
+    const label = document.getElementById("pub-cal-label");
+
+    if (PUB_STATE.calMode === "day") {
+      const isoDay = cur.toISOString().slice(0, 10);
+      if (label) label.textContent = isoDay;
+      const dayPosts = posts.filter((p) => dateKeyIST(p.scheduled_at) === isoDay);
+      container.innerHTML = `
+        <div class="pub-cal-cell" data-date="${isoDay}" style="min-height:240px;">
+          <div class="pub-cal-date-num">${isoDay} (${dayPosts.length} posts)</div>
+          ${dayPosts.map((p) => renderCard(p)).join("") || `<div style="opacity:0.6;padding:20px;">No posts scheduled for this day.</div>`}
+        </div>
+      `;
+      bindCardActions(container);
+      return;
+    }
+
+    let dates = [];
+    if (PUB_STATE.calMode === "week") {
+      const start = new Date(cur);
+      start.setDate(cur.getDate() - cur.getDay());
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(start);
+        d.setDate(start.getDate() + i);
+        dates.push(d);
+      }
+      if (label) label.textContent = `Week of ${dates[0].toISOString().slice(0, 10)}`;
+    } else {
+      const y = cur.getFullYear(), m = cur.getMonth();
+      if (label) label.textContent = cur.toLocaleString("en-IN", { month: "long", year: "numeric" });
+      const first = new Date(y, m, 1);
+      const start = new Date(first);
+      start.setDate(1 - first.getDay());
+      for (let i = 0; i < 35; i++) {
+        const d = new Date(start);
+        d.setDate(start.getDate() + i);
+        dates.push(d);
+      }
+    }
+
+    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let html = `<div class="pub-cal-grid">${dayNames.map((d) => `<div class="pub-cal-day-hdr">${d}</div>`).join("")}`;
+    for (const d of dates) {
+      const iso = d.toISOString().slice(0, 10);
+      const dayPosts = posts.filter((p) => dateKeyIST(p.scheduled_at) === iso);
+      html += `
+        <div class="pub-cal-cell" data-date="${iso}">
+          <div class="pub-cal-date-num">${d.getDate()}</div>
+          ${dayPosts.map((p) => `<div class="pub-cal-chip" draggable="true" data-post-id="${p.id}" title="${esc(p.caption)}">${PLATFORM_ICON[p.platform] || ""} ${fmtTimeIST(p.scheduled_at)} ${esc(p.zodiac_english || p.original_filename)}</div>`).join("")}
+        </div>
+      `;
+    }
+    html += `</div>`;
+    container.innerHTML = html;
+
+    container.querySelectorAll(".pub-cal-chip").forEach((chip) => {
+      chip.addEventListener("click", () => openPostModal(Number(chip.dataset.postId), false));
+      chip.addEventListener("dragstart", (e) => e.dataTransfer.setData("text/plain", chip.dataset.postId));
+    });
+    container.querySelectorAll(".pub-cal-cell").forEach((cell) => {
+      cell.addEventListener("dragover", (e) => { e.preventDefault(); cell.classList.add("drag-over"); });
+      cell.addEventListener("dragleave", () => cell.classList.remove("drag-over"));
+      cell.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        cell.classList.remove("drag-over");
+        const postId = Number(e.dataTransfer.getData("text/plain"));
+        const targetDate = cell.dataset.date;
+        if (!postId || !targetDate) return;
+        const post = PUB_STATE.posts.find((x) => x.id === postId);
+        const timePart = post && post.scheduled_at && post.scheduled_at.length >= 16 ? post.scheduled_at.slice(11, 19) : "09:00:00";
+        await apiReschedule(postId, `${targetDate}T${timePart}`);
+      });
+    });
+  }
+
+  function renderBoardView() {
+    const container = document.getElementById("pub-view-board");
+    if (!container) return;
+    const posts = getFilteredPosts(true);
+    const cols = [
+      { key: "draft", label: "Drafts", match: (s) => s === "draft" },
+      { key: "scheduled", label: "Queue", match: (s) => s === "scheduled" || s === "pending_approval" },
+      { key: "processing", label: "Processing", match: (s) => ["processing", "publishing", "uploading"].includes(s) },
+      { key: "published", label: "Published", match: (s) => SENT_SET.has(s) },
+      { key: "failed", label: "Failed / Retry", match: (s) => ["failed", "retry_waiting", "auth_required"].includes(s) },
+    ];
+
+    let html = `<div class="pub-board">`;
+    for (const col of cols) {
+      const items = posts.filter((p) => col.match(p.status));
+      html += `
+        <div class="pub-board-col" data-col-status="${col.key}">
+          <div class="pub-board-col-hdr"><span>${col.label}</span><span class="pub-tab-count">${items.length}</span></div>
+          ${items.map((p) => renderCard(p)).join("") || `<div style="opacity:0.5;font-size:0.8rem;padding:10px;">Empty</div>`}
+        </div>
+      `;
+    }
+    html += `</div>`;
+    container.innerHTML = html;
+    bindCardActions(container);
+
+    container.querySelectorAll(".pub-board-col").forEach((colEl) => {
+      colEl.addEventListener("dragover", (e) => { e.preventDefault(); colEl.classList.add("drag-over"); });
+      colEl.addEventListener("dragleave", () => colEl.classList.remove("drag-over"));
+      colEl.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        colEl.classList.remove("drag-over");
+        const postId = Number(e.dataTransfer.getData("text/plain"));
+        const target = colEl.dataset.colStatus;
+        if (!postId || !["draft", "scheduled"].includes(target)) return;
+        await apiPatchPost(postId, { status: target });
+      });
+    });
+  }
+
+  function renderAll() {
+    renderSidebar();
+    renderHeaderAndTabs();
+    const listEl = document.getElementById("pub-view-list");
+    const calEl = document.getElementById("pub-view-calendar");
+    const boardEl = document.getElementById("pub-view-board");
+    const calSub = document.getElementById("pub-cal-subcontrols");
+    if (listEl) listEl.classList.toggle("hidden", PUB_STATE.activeView !== "list");
+    if (calEl) calEl.classList.toggle("hidden", PUB_STATE.activeView !== "calendar");
+    if (boardEl) boardEl.classList.toggle("hidden", PUB_STATE.activeView !== "board");
+    if (calSub) calSub.classList.toggle("hidden", PUB_STATE.activeView !== "calendar");
+
+    if (PUB_STATE.activeView === "list") renderListView();
+    else if (PUB_STATE.activeView === "calendar") renderCalendarView();
+    else renderBoardView();
+  }
+
+  async function apiPatchPost(id, payload) {
+    const res = await fetch(`/api/auto-post/posts/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.detail || "Update failed");
+      return;
+    }
+    await fetchWorkspace();
+  }
+
+  async function apiReschedule(id, scheduledAt) {
+    const res = await fetch(`/api/auto-post/posts/${id}/reschedule`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scheduled_at: scheduledAt }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(err.detail || "Reschedule failed");
+      return;
+    }
+    await fetchWorkspace();
+  }
+
+  function openPostModal(postId, editMode = false) {
+    const p = PUB_STATE.posts.find((x) => x.id === postId);
+    if (!p) return;
+    const modal = document.getElementById("pub-post-modal");
+    const title = document.getElementById("pub-modal-title");
+    const body = document.getElementById("pub-modal-body");
+    if (!modal || !body) return;
+    title.textContent = editMode ? `Edit Post #${p.id}` : `Post Details #${p.id}`;
+    body.innerHTML = `
+      <div style="display:grid;gap:10px;">
+        <div><strong>Channel:</strong> ${esc(p.account_key)} (${esc(p.platform)})</div>
+        <div><strong>Status:</strong> ${esc(p.status)}</div>
+        <div><strong>File:</strong> ${esc(p.original_filename)}</div>
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px;">Caption</label>
+          <textarea id="pub-edit-caption" class="form-control" rows="3" ${editMode ? "" : "readonly"}>${esc(p.caption)}</textarea>
+        </div>
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px;">Scheduled At (Asia/Kolkata)</label>
+          <input id="pub-edit-time" type="datetime-local" class="form-control" value="${esc((p.scheduled_at || "").slice(0, 16))}" ${editMode ? "" : "readonly"} />
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;">
+          ${editMode ? `<button type="button" id="pub-save-edit-btn" class="btn btn-primary">Save Changes</button>` : ""}
+        </div>
+      </div>
+    `;
+    modal.classList.remove("hidden");
+    const saveBtn = document.getElementById("pub-save-edit-btn");
+    if (saveBtn) {
+      saveBtn.addEventListener("click", async () => {
+        const caption = document.getElementById("pub-edit-caption").value;
+        const dt = document.getElementById("pub-edit-time").value;
+        await apiPatchPost(p.id, { caption, scheduled_at: dt ? `${dt}:00` : undefined });
+        modal.classList.add("hidden");
+      });
+    }
+  }
+
+  function openNewPostModal(mode = "draft") {
+    const modal = document.getElementById("pub-post-modal");
+    const title = document.getElementById("pub-modal-title");
+    const body = document.getElementById("pub-modal-body");
+    if (!modal || !body) return;
+    title.textContent = mode === "schedule" || mode === "queue" ? "Schedule / Add to Queue" : "Create Draft Post";
+    const defaultStatus = mode === "draft" ? "draft" : "scheduled";
+    body.innerHTML = `
+      <div style="display:grid;gap:10px;">
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px;">Channel</label>
+          <select id="pub-new-channel" class="form-control">
+            <option value="facebook:default">Facebook Page</option>
+            <option value="instagram:default">Instagram Professional</option>
+            <option value="youtube:default">YouTube Channel</option>
+          </select>
+        </div>
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px;">Caption</label>
+          <textarea id="pub-new-caption" class="form-control" rows="3" placeholder="Write your post caption..."></textarea>
+        </div>
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px;">Scheduled Date &amp; Time (Asia/Kolkata)</label>
+          <input id="pub-new-time" type="datetime-local" class="form-control" />
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px;">
+          <button type="button" id="pub-create-submit-btn" class="btn btn-primary">Save Post</button>
+        </div>
+      </div>
+    `;
+    modal.classList.remove("hidden");
+    document.getElementById("pub-create-submit-btn")?.addEventListener("click", async () => {
+      const account_key = document.getElementById("pub-new-channel").value;
+      const caption = document.getElementById("pub-new-caption").value;
+      const dt = document.getElementById("pub-new-time").value;
+      const res = await fetch("/api/publishing/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          account_key,
+          status: defaultStatus,
+          caption,
+          scheduled_at: dt ? `${dt}:00` : undefined,
+        }),
+      });
+      if (!res.ok) {
+        if (window.GSPUI) window.GSPUI.toast("Failed to create post", "error");
+        return;
+      }
+      modal.classList.add("hidden");
+      if (window.GSPUI) window.GSPUI.toast("Post created", "success");
+      await fetchWorkspace();
+    });
+  }
+
+  function bindCardActions(root) {
+    root.querySelectorAll(".pub-card").forEach((card) => {
+      card.addEventListener("dragstart", (e) => e.dataTransfer.setData("text/plain", card.dataset.postId));
+    });
+    root.querySelectorAll(".pub-act-publish").forEach((b) => {
+      b.addEventListener("click", () => {
+        PUB_STATE.pendingConfirmPostId = Number(b.dataset.id);
+        document.getElementById("pub-confirm-modal")?.classList.remove("hidden");
+      });
+    });
+    root.querySelectorAll(".pub-act-edit").forEach((b) => b.addEventListener("click", () => openPostModal(Number(b.dataset.id), true)));
+    root.querySelectorAll(".pub-act-resched").forEach((b) => b.addEventListener("click", () => openPostModal(Number(b.dataset.id), true)));
+    root.querySelectorAll(".pub-act-details").forEach((b) => b.addEventListener("click", () => openPostModal(Number(b.dataset.id), false)));
+    root.querySelectorAll(".pub-act-draft").forEach((b) => b.addEventListener("click", async () => {
+      await apiPatchPost(Number(b.dataset.id), { status: "draft" });
+      if (window.GSPUI) window.GSPUI.toast("Moved to Drafts", "info");
+    }));
+    root.querySelectorAll(".pub-act-approve").forEach((b) => b.addEventListener("click", async () => {
+      await apiPatchPost(Number(b.dataset.id), { status: "scheduled" });
+      if (window.GSPUI) window.GSPUI.toast("Post approved and scheduled", "success");
+    }));
+    root.querySelectorAll(".pub-act-remove").forEach((b) => b.addEventListener("click", async () => {
+      const ok = window.GSPUI
+        ? await window.GSPUI.confirm({
+            title: "Remove from Queue",
+            message: "Are you sure you want to remove this post from the publishing queue?",
+            confirmText: "Remove",
+            variant: "danger"
+          })
+        : window.confirm("Remove this post from the queue?");
+      if (!ok) return;
+      await fetch(`/api/auto-post/posts/${Number(b.dataset.id)}/cancel`, { method: "POST" });
+      if (window.GSPUI) window.GSPUI.toast("Post removed from queue", "info");
+      await fetchWorkspace();
+    }));
+  }
+
+  function initPublishingWorkspace() {
+    document.getElementById("sidebar-new-btn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      document.getElementById("pub-new-post-menu")?.classList.toggle("hidden");
+    });
+
+    document.querySelectorAll(".pub-tab").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".pub-tab").forEach((x) => x.classList.remove("active"));
+        btn.classList.add("active");
+        PUB_STATE.activeTab = btn.dataset.pubTab;
+        renderAll();
+      });
+    });
+
+    document.querySelectorAll(".pub-view-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".pub-view-btn").forEach((x) => x.classList.remove("active"));
+        btn.classList.add("active");
+        PUB_STATE.activeView = btn.dataset.pubView;
+        renderAll();
+      });
+    });
+
+    document.querySelectorAll(".pub-cal-mode-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".pub-cal-mode-btn").forEach((x) => x.classList.remove("active"));
+        btn.classList.add("active");
+        PUB_STATE.calMode = btn.dataset.calMode;
+        renderCalendarView();
+      });
+    });
+
+    document.getElementById("pub-cal-prev")?.addEventListener("click", () => {
+      const d = PUB_STATE.calCursor;
+      if (PUB_STATE.calMode === "day") d.setDate(d.getDate() - 1);
+      else if (PUB_STATE.calMode === "week") d.setDate(d.getDate() - 7);
+      else d.setMonth(d.getMonth() - 1);
+      renderCalendarView();
+    });
+
+    document.getElementById("pub-cal-next")?.addEventListener("click", () => {
+      const d = PUB_STATE.calCursor;
+      if (PUB_STATE.calMode === "day") d.setDate(d.getDate() + 1);
+      else if (PUB_STATE.calMode === "week") d.setDate(d.getDate() + 7);
+      else d.setMonth(d.getMonth() + 1);
+      renderCalendarView();
+    });
+
+    const bindFilter = (id, key) => {
+      document.getElementById(id)?.addEventListener("input", (e) => {
+        PUB_STATE.filters[key] = e.target.value;
+        renderAll();
+      });
+    };
+    bindFilter("pub-search-input", "search");
+    bindFilter("scheduler-platform-filter", "platform");
+    bindFilter("scheduler-status-filter", "status");
+    bindFilter("pub-category-filter", "category");
+    bindFilter("pub-date-from", "dateFrom");
+    bindFilter("pub-date-to", "dateTo");
+
+    document.getElementById("pub-clear-filters-btn")?.addEventListener("click", () => {
+      PUB_STATE.filters = { search: "", platform: "", status: "", category: "", dateFrom: "", dateTo: "" };
+      ["pub-search-input", "scheduler-platform-filter", "scheduler-status-filter", "pub-category-filter", "pub-date-from", "pub-date-to"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = "";
+      });
+      renderAll();
+    });
+
+    document.getElementById("pub-new-post-btn")?.addEventListener("click", () => {
+      document.getElementById("pub-new-post-menu")?.classList.toggle("hidden");
+    });
+
+    document.querySelectorAll(".pub-quick-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        document.getElementById("pub-new-post-menu")?.classList.add("hidden");
+        const act = item.dataset.action;
+        if (act === "bulk" || act === "upload") {
+          if (typeof switchTab === "function") switchTab("autopost");
+          document.querySelector('.autopost-sub-btn[data-subtab="upload"]')?.click();
+        } else {
+          openNewPostModal(act);
+        }
+      });
+    });
+
+    document.getElementById("pub-channel-settings-btn")?.addEventListener("click", () => {
+      if (typeof switchTab === "function") switchTab("autopost");
+      document.querySelector('.autopost-sub-btn[data-subtab="schedule"]')?.click();
+    });
+
+    document.getElementById("pub-modal-close")?.addEventListener("click", () => document.getElementById("pub-post-modal")?.classList.add("hidden"));
+    document.getElementById("pub-confirm-close")?.addEventListener("click", () => document.getElementById("pub-confirm-modal")?.classList.add("hidden"));
+    document.getElementById("pub-confirm-cancel")?.addEventListener("click", () => document.getElementById("pub-confirm-modal")?.classList.add("hidden"));
+    document.getElementById("pub-confirm-ok")?.addEventListener("click", async () => {
+      const id = PUB_STATE.pendingConfirmPostId;
+      document.getElementById("pub-confirm-modal")?.classList.add("hidden");
+      if (!id) return;
+      const res = await fetch(`/api/auto-post/posts/${id}/publish-now`, { method: "POST" });
+      if (!res.ok) {
+        if (window.GSPUI) window.GSPUI.toast("Publish failed", "error");
+      } else {
+        if (window.GSPUI) window.GSPUI.toast("Post published", "success");
+      }
+      await fetchWorkspace();
+    });
+
+    document.getElementById("refresh-scheduled-posts-btn")?.addEventListener("click", fetchWorkspace);
+    window.loadScheduledPosts = fetchWorkspace;
+    fetchWorkspace();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initPublishingWorkspace);
+  } else {
+    initPublishingWorkspace();
+  }
+})();

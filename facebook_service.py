@@ -165,6 +165,18 @@ class FacebookService:
         all_comments = []
         for post in posts:
             post_id = post["id"]
+            try:
+                database.upsert_social_post(
+                    platform="facebook",
+                    account_id=page_id,
+                    post_id=post_id,
+                    caption=post.get("message") or "",
+                    thumbnail_url=post.get("full_picture") or "",
+                    permalink=post.get("permalink_url") or "",
+                    post_date=post.get("created_time") or "",
+                )
+            except Exception:
+                pass
             comments_url = f"{GRAPH_API_BASE}/{post_id}/comments"
             c_params = {
                 "access_token": access_token,

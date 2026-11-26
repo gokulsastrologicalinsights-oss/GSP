@@ -223,7 +223,7 @@ def generate_reply_suggestion(
                 "generation_method": "local_contextual",
             }
 
-        if intent == "positive":
+        if intent in ("positive", "appreciation"):
             ctx_note = " தொடர்ந்த உரையாடலுக்கு நன்றி." if has_prev and lang == "ta" else ""
             if lang == "ta":
                 reply = f"மிக்க நன்றி{greet_name}! {brand} மீதான உங்கள் அன்பும் ஆதரவும் எங்களுக்கு பெரிய ஊக்கம்.{ctx_note} 🙏✨"
@@ -266,3 +266,371 @@ def generate_reply_suggestion(
             "reason": "Fallback suggestion used because contextual generation encountered an error.",
             "generation_method": "fallback",
         }
+
+
+def _extract_post_topic(post_caption: Optional[str]) -> str:
+    """Extract a short, safe topic snippet from the post caption if available."""
+    if not post_caption:
+        return ""
+    cleaned = re.sub(r"https?://\S+|#\S+", "", post_caption).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    if not cleaned:
+        return ""
+    first_sentence = re.split(r"[.!?\n]", cleaned)[0].strip()
+    if len(first_sentence) > 60:
+        first_sentence = first_sentence[:57].rstrip() + "..."
+    return first_sentence
+
+
+def _normalize_lang(lang: str) -> str:
+    if lang in ("ta", "tanglish", "en"):
+        return lang
+    return "en"
+
+
+def generate_three_level_suggestions(
+    comment_text: str,
+    commenter_name: Optional[str] = None,
+    account_name: Optional[str] = None,
+    platform: Optional[str] = None,
+    post_caption: Optional[str] = None,
+    previous_context: Optional[str] = None,
+) -> Dict[str, object]:
+    """Generate three genuinely distinct reply suggestions (Short, Medium, Detailed)
+    personalized to the comment, post context, language, sentiment, intent, and brand.
+    """
+    cls = classify_comment(comment_text)
+    raw_lang = cls["language"]
+    lang = _normalize_lang(raw_lang)
+    sentiment = cls["sentiment"]
+    intent = cls["intent"]
+    brand = _detect_brand(account_name, f"{comment_text or ''} {post_caption or ''}")
+    name = (commenter_name or "").strip().lstrip("@")
+    greet = f" {name}" if name and len(name) <= 24 else ""
+    topic = _extract_post_topic(post_caption)
+    has_prev = bool(previous_context and previous_context.strip())
+
+    # Normalize intent aliases for display & routing
+    intent_label_map = {
+        "general_inquiry": "inquiry",
+        "greeting": "positive",
+    }
+    normalized_intent = intent_label_map.get(intent, intent)
+    if normalized_intent == "positive":
+        lower_c = (comment_text or "").lower()
+        if any(w in lower_c for w in ("thank", "thanks", "nandri", "nanri", "நன்றி", "appreciate", "helpful", "useful", "பயனுள்ள")):
+            normalized_intent = "appreciation"
+
+    if intent == "spam":
+        return {
+            "language": raw_lang,
+            "sentiment": "spam",
+            "intent": "spam",
+            "short": "",
+            "medium": "",
+            "detailed": "",
+            "recommend_no_reply": True,
+            "manual_review_required": False,
+            "reason": "Spam detected (promotional links, phone numbers, or solicitation). Recommended: No reply.",
+            "generation_method": "local_contextual_3level",
+        }
+
+    if intent == "threatening":
+        return {
+            "language": raw_lang,
+            "sentiment": "threatening",
+            "intent": "threatening",
+            "short": "",
+            "medium": "",
+            "detailed": "",
+            "recommend_no_reply": True,
+            "manual_review_required": True,
+            "reason": "Threatening or potentially harmful content detected. Flagged for manual review.",
+            "generation_method": "local_contextual_3level",
+        }
+
+    if intent == "abusive":
+        if lang == "ta":
+            short = f"வணக்கம்{greet}, உங்கள் கருத்தை பதிவு செய்ததற்கு நன்றி."
+            medium = (
+                f"வணக்கம்{greet}, உங்கள் கருத்தை நாங்கள் கவனத்தில் எடுத்துக்கொண்டோம். "
+                f"மரியாதையான உரையாடலை {brand} எப்போதும் வரவேற்கிறது."
+            )
+            detailed = (
+                f"வணக்கம்{greet}, உங்கள் கருத்தை பகிர்ந்ததற்கு நன்றி. "
+                f"எங்கள் பக்கத்தில் அனைவருக்கும் மரியாதையான மற்றும் ஆரோக்கியமான உரையாடல் இருக்க வேண்டும் என விரும்புகிறோம். "
+                f"உங்களுக்கு ஏதேனும் குறிப்பிட்ட உதவி தேவைப்பட்டால், தயவுசெய்து எங்கள் அதிகாரப்பூர்வ WhatsApp வழியாக தொடர்பு கொள்ளவும்."
+            )
+        elif lang == "tanglish":
+            short = f"Vanakkam{greet}, ungal karuththai gavanathil eduthukondom."
+            medium = (
+                f"Vanakkam{greet}, ungal feedback-ai naangal kavanathil eduthukondom. "
+                f"Mariyathaiyana uraiyaadalai {brand} eppodhum varaverkiradhu."
+            )
+            detailed = (
+                f"Vanakkam{greet}, ungal karuththai pagirndhadharku nandri. "
+                f"Engal community-il anaivarukkum mariyathaiyana matrum aarokkiyamana uraiyaadal irukka vendum ena virumbugirom. "
+                f"Ungalukku ethavathu kurippitta udhavi thevaipattal, dayavuseidhu engal official WhatsApp moolam thodarbu kollavum."
+            )
+        else:
+            short = f"Hello{greet}, thank you for sharing your perspective."
+            medium = (
+                f"Hello{greet}, we have noted your comment. "
+                f"At {brand}, we value respectful and constructive conversation with our community."
+            )
+            detailed = (
+                f"Hello{greet}, thank you for taking the time to comment. "
+                f"While we welcome all feedback, we aim to keep our community space respectful for everyone. "
+                f"If you have a specific concern you would like us to review, please message us directly on our official WhatsApp channel."
+            )
+        return {
+            "language": raw_lang,
+            "sentiment": sentiment,
+            "intent": "abusive",
+            "short": short,
+            "medium": medium,
+            "detailed": detailed,
+            "recommend_no_reply": False,
+            "manual_review_required": True,
+            "reason": "Abusive or hostile language detected. Calm, respectful, non-confrontational suggestions generated for manual review.",
+            "generation_method": "local_contextual_3level",
+        }
+
+    if intent == "complaint":
+        topic_en = f" regarding \"{topic}\"" if topic else ""
+        if lang == "ta":
+            short = f"வணக்கம்{greet}, உங்கள் சிரமத்திற்கு வருந்துகிறோம்."
+            medium = (
+                f"வணக்கம்{greet}, உங்களுக்கு ஏற்பட்ட அனுபவத்திற்கு வருந்துகிறோம். "
+                f"உங்கள் விவரங்களை சரிபார்க்க {brand} WhatsApp குழுவை தொடர்பு கொள்ளவும்."
+            )
+            detailed = (
+                f"வணக்கம்{greet}, உங்கள் கருத்தை பகிர்ந்ததற்கு நன்றி, மேலும் உங்களுக்கு ஏற்பட்ட சிரமத்திற்கு வருந்துகிறோம். "
+                f"இதை நாங்கள் தீவிரமாக கவனத்தில் எடுத்துக்கொள்கிறோம். "
+                f"உங்கள் விவரங்களை பாதுகாப்பாக சரிபார்த்து உரிய வழிகாட்டுதல் வழங்க, எங்கள் {brand} WhatsApp எண்ணில் நேரடியாக செய்தி அனுப்பவும்."
+            )
+        elif lang == "tanglish":
+            short = f"Vanakkam{greet}, ungalukku erpatta siramathukku varundhugirom."
+            medium = (
+                f"Vanakkam{greet}, ungal experience patri ketka varuthamaga ulladhu. "
+                f"Ungal vivarangalai sariparkka {brand} WhatsApp-il message pannunga, udane paarkalaam."
+            )
+            detailed = (
+                f"Vanakkam{greet}, ungal karuththai pagirndhadharku nandri, ungalukku erpatta siramathukku mannikkavum. "
+                f"Idhai naangal gavanamaga eduthukolgirom. "
+                f"Ungal vivarangalai paadhugaappaga saripaarkka, dayavuseidhu {brand} official WhatsApp-il direct-ah message anuppunga."
+            )
+        else:
+            short = f"Hello{greet}, we're sorry to hear about your experience."
+            medium = (
+                f"Hello{greet}, thank you for bringing this to our attention{topic_en}. "
+                f"We're sorry for any inconvenience and would like to look into this for you."
+            )
+            detailed = (
+                f"Hello{greet}, we truly regret that your experience{topic_en} did not meet expectations. "
+                f"Your feedback is important to {brand}, and we want to review the details carefully without making assumptions publicly. "
+                f"Please send us a direct message on our official WhatsApp channel so our team can assist you properly."
+            )
+        return {
+            "language": raw_lang,
+            "sentiment": "negative",
+            "intent": "complaint",
+            "short": short,
+            "medium": medium,
+            "detailed": detailed,
+            "recommend_no_reply": False,
+            "manual_review_required": True,
+            "reason": "Complaint detected. Empathetic, solution-oriented suggestions without unverified promises.",
+            "generation_method": "local_contextual_3level",
+        }
+
+    if intent == "negative":
+        if lang == "ta":
+            short = f"வணக்கம்{greet}, உங்கள் நேர்மையான கருத்துக்கு நன்றி."
+            medium = (
+                f"வணக்கம்{greet}, உங்கள் கருத்தை பகிர்ந்ததற்கு மிக்க நன்றி. "
+                f"எங்கள் {brand} பதிவுகளை மேலும் பயனுள்ளதாக மாற்ற இதை நிச்சயம் கருத்தில் கொள்வோம்."
+            )
+            detailed = (
+                f"வணக்கம்{greet}, உங்கள் நேர்மையான பார்வையை பகிர்ந்ததற்கு நன்றி. "
+                f"எங்கள் உள்ளடக்கமும் சேவையும் உங்களுக்கு இன்னும் பயனுள்ளதாக இருக்க வேண்டும் என்பதே {brand}-ன் நோக்கம். "
+                f"எதை மேம்படுத்தலாம் என்ற உங்கள் ஆலோசனைகளையும் பகிர்ந்தால் எங்களுக்கு மிகவும் உதவியாக இருக்கும்."
+            )
+        elif lang == "tanglish":
+            short = f"Vanakkam{greet}, ungal nermaiyana karuththukku nandri."
+            medium = (
+                f"Vanakkam{greet}, ungal feedback-ku mikka nandri. "
+                f"{brand} content matrum sevaiyai melum sirappaga maatra idhai kandippaga payanpaduthuvom."
+            )
+            detailed = (
+                f"Vanakkam{greet}, ungal nermaiyana karuththai pagirndhadharku romba nandri. "
+                f"Engal pathivugal ungalukku unmaiyil payanulladhaga irukka vendum enbadhe {brand}-in nokkam. "
+                f"Ethai mempaduthalaam endru ungalukku thonugiradho, adhaiyum pagirndhaal naangal kandippaga kavanippom."
+            )
+        else:
+            short = f"Thank you for your honest feedback{greet}."
+            medium = (
+                f"Thank you for sharing your thoughts{greet}. "
+                f"We value candid feedback and will keep this in mind as we improve {brand}."
+            )
+            detailed = (
+                f"Hello{greet}, thank you for taking a moment to share your honest perspective. "
+                f"At {brand}, we are always working to make our content and guidance clearer and more helpful. "
+                f"If there is something specific you felt was missing, we'd appreciate hearing your suggestions."
+            )
+        return {
+            "language": raw_lang,
+            "sentiment": "negative",
+            "intent": "negative",
+            "short": short,
+            "medium": medium,
+            "detailed": detailed,
+            "recommend_no_reply": False,
+            "manual_review_required": True,
+            "reason": "Negative feedback detected. Professional, non-defensive acknowledgment.",
+            "generation_method": "local_contextual_3level",
+        }
+
+    if intent == "general_inquiry":
+        topic_ref = f" ({topic})" if topic else ""
+        if lang == "ta":
+            short = f"வணக்கம்{greet}! உங்கள் கேள்விக்கு மிக்க நன்றி. 🙏"
+            medium = (
+                f"வணக்கம்{greet}! {brand} குறித்த உங்கள் கேள்விக்கு நன்றி{topic_ref}. "
+                f"சரியான விவரங்களுக்கு எங்கள் WhatsApp எண்ணில் தொடர்பு கொள்ளவும்."
+            )
+            detailed = (
+                f"வணக்கம்{greet}! இந்தப் பதிவு தொடர்பான உங்கள் ஆர்வத்திற்கும் கேள்விக்கும் மிக்க நன்றி. "
+                f"ஒவ்வொருவருக்கும் தனிப்பட்ட விவரங்கள் மாறுபடும் என்பதால், பொது வெளியில் தவறான தகவல்களைத் தவிர்க்கிறோம். "
+                f"தனிப்பட்ட வழிகாட்டுதலுக்கும் கட்டண விவரங்களுக்கும் எங்கள் {brand} WhatsApp குழுவை தொடர்பு கொள்ளுங்கள்."
+            )
+        elif lang == "tanglish":
+            short = f"Vanakkam{greet}! Ungal kelvikku mikka nandri. 🙏"
+            medium = (
+                f"Vanakkam{greet}! {brand} patriya ungal kelvikku nandri{topic_ref}. "
+                f"Thani-patta vivarangalukku engal WhatsApp-il thodarbu kollunga."
+            )
+            detailed = (
+                f"Vanakkam{greet}! Indha post{topic_ref} patri ketta ungal kelvikku romba nandri. "
+                f"Ovvoruvarukkum vivarangal verupadum enbadhaal, sariyana thagavalgalai thanipattamuraiyil pagirgirom. "
+                f"Melum vivarangalukkum vazhikaattudhalukkum {brand} WhatsApp-il message pannunga, udane help panrom."
+            )
+        else:
+            short = f"Hello{greet}! Thanks for asking—we'd be happy to help. 🙏"
+            medium = (
+                f"Hello{greet}! Thank you for your question about {brand}{topic_ref}. "
+                f"Please message us on WhatsApp so we can share the exact details with you."
+            )
+            detailed = (
+                f"Hello{greet}! Thank you for reaching out with your question{topic_ref}. "
+                f"Because details can vary depending on your specific requirements, we prefer sharing personalized guidance directly rather than guessing in comments. "
+                f"Feel free to connect with {brand} on WhatsApp and our team will be glad to assist you."
+            )
+        return {
+            "language": raw_lang,
+            "sentiment": "neutral",
+            "intent": "inquiry",
+            "short": short,
+            "medium": medium,
+            "detailed": detailed,
+            "recommend_no_reply": False,
+            "manual_review_required": False,
+            "reason": "Inquiry detected. Helpful response guiding the commenter to personalized next steps.",
+            "generation_method": "local_contextual_3level",
+        }
+
+    if intent in ("positive", "appreciation", "greeting"):
+        prev_ta = " தொடர்ந்து இணைந்திருப்பதற்கு நன்றி." if has_prev else ""
+        prev_en = " We appreciate your continued support." if has_prev else ""
+        if lang == "ta":
+            short = f"மிக்க நன்றி{greet}! உங்கள் அன்பான ஆதரவுக்கு நன்றிகள். 🙏✨"
+            medium = (
+                f"வணக்கம்{greet}! உங்கள் அன்பான கருத்துக்கு நெஞ்சார்ந்த நன்றி. "
+                f"{brand} பதிவுகள் உங்களுக்கு பிடித்ததில் மகிழ்ச்சி.{prev_ta} 🙏"
+            )
+            detailed = (
+                f"வணக்கம்{greet}! உங்கள் ஊக்கமளிக்கும் வார்த்தைகளுக்கும் அன்பிற்கும் மிக்க நன்றி. "
+                f"இது போன்ற கருத்துகளே {brand} சார்பில் மேலும் பயனுள்ள மற்றும் தரமான பதிவுகளை உருவாக்க எங்களுக்கு பெரிய உத்வேகம் அளிக்கிறது.{prev_ta} "
+                f"தொடர்ந்து எங்களுடன் இணைந்திருங்கள்! ✨🙏"
+            )
+        elif lang == "tanglish":
+            short = f"Romba nandri{greet}! Ungal support-ku mikka nandri! 🙏✨"
+            medium = (
+                f"Vanakkam{greet}! Ungal anbaana karuththukku romba nandri. "
+                f"{brand} post ungalukku pidichirukku-nu ketka romba santhosham! 🙏"
+            )
+            detailed = (
+                f"Vanakkam{greet}! Ungal lovely feedback matrum support-ku manamarndha nandri. "
+                f"Neenga tharum indha ookkam dhaan {brand}-la melum nalla matrum payanulla content podradhukku engalukku periya energy. "
+                f"Thodarndhu engaludan inaindhirungal! ✨🙏"
+            )
+        else:
+            short = f"Thank you so much{greet} for the kind support! 🙏✨"
+            medium = (
+                f"Hello{greet}! Thank you for your wonderful words and encouragement. "
+                f"We're glad you enjoyed this {brand} post!{prev_en} 🙏"
+            )
+            detailed = (
+                f"Hello{greet}! We truly appreciate you taking the time to leave such a thoughtful comment. "
+                f"Support from community members like you motivates us at {brand} to keep sharing helpful and meaningful insights.{prev_en} "
+                f"Stay connected with us for more updates! ✨🙏"
+            )
+        return {
+            "language": raw_lang,
+            "sentiment": "positive",
+            "intent": normalized_intent,
+            "short": short,
+            "medium": medium,
+            "detailed": detailed,
+            "recommend_no_reply": False,
+            "manual_review_required": False,
+            "reason": f"{normalized_intent.capitalize()} comment detected. Warm, personalized 3-level suggestions.",
+            "generation_method": "local_contextual_3level",
+        }
+
+    # Neutral fallback
+    if lang == "ta":
+        short = f"உங்கள் கருத்துக்கு நன்றி{greet}! 😊"
+        medium = (
+            f"வணக்கம்{greet}, உங்கள் கருத்தை பகிர்ந்ததற்கு நன்றி. "
+            f"{brand} உடன் தொடர்ந்து இணைந்திருங்கள். 😊"
+        )
+        detailed = (
+            f"வணக்கம்{greet}, எங்கள் பதிவில் உங்கள் கருத்தை பகிர்ந்ததற்கு மிக்க நன்றி. "
+            f"சமூகத்தினரின் ஒவ்வொரு கருத்தும் எங்களுக்கு முக்கியமானது. "
+            f"உங்களுக்கு ஏதேனும் கேள்விகள் இருந்தால் தயங்காமல் கேளுங்கள்! 🙏"
+        )
+    elif lang == "tanglish":
+        short = f"Ungal karuththukku nandri{greet}! 😊"
+        medium = (
+            f"Vanakkam{greet}, ungal comment-ku nandri. "
+            f"{brand}-udan thodarndhu inaindhirungal! 😊"
+        )
+        detailed = (
+            f"Vanakkam{greet}, indha post-la ungal karuththai pagirndhadharku mikka nandri. "
+            f"Engal community-oda ovvoru comment-um engalukku mukkiyam. "
+            f"Ungalukku ethavathu kelvigal irundhaal thayangaamal kelunga! 🙏"
+        )
+    else:
+        short = f"Thank you for sharing your comment{greet}! 😊"
+        medium = (
+            f"Hello{greet}, thanks for stopping by and leaving a comment. "
+            f"Stay connected with {brand} for more updates! 😊"
+        )
+        detailed = (
+            f"Hello{greet}, we appreciate you engaging with our post at {brand}. "
+            f"Every comment helps us stay connected with our community. "
+            f"If you have any questions or thoughts you'd like to explore further, feel free to let us know! 🙏"
+        )
+    return {
+        "language": raw_lang,
+        "sentiment": "neutral",
+        "intent": "neutral",
+        "short": short,
+        "medium": medium,
+        "detailed": detailed,
+        "recommend_no_reply": False,
+        "manual_review_required": False,
+        "reason": "Neutral comment detected. Polite, engaging 3-level suggestions.",
+        "generation_method": "local_contextual_3level",
+    }

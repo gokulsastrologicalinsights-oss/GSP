@@ -181,6 +181,7 @@ def get_status():
         "ig_auto_reply_enabled": settings.get("ig_auto_reply_enabled", "false") == "true",
         "yt_auto_reply_enabled": settings.get("yt_auto_reply_enabled", "false") == "true",
         "safe_test_mode": settings.get("safe_test_mode") == "true",
+        "ui_theme": settings.get("ui_theme", "dark"),
         "stats": {
             "connected_accounts": accounts_count,
             "comments_processed": total_processed,
@@ -191,8 +192,10 @@ def get_status():
 
 @app.post("/api/settings")
 def update_setting(update: SettingUpdate):
-    if update.key not in ["auto_reply_enabled", "ig_auto_reply_enabled", "yt_auto_reply_enabled", "safe_test_mode", "global_kill_switch"]:
+    if update.key not in ["auto_reply_enabled", "ig_auto_reply_enabled", "yt_auto_reply_enabled", "safe_test_mode", "global_kill_switch", "ui_theme"]:
         raise HTTPException(status_code=400, detail="Invalid setting key")
+    if update.key == "ui_theme" and update.value not in ("light", "dark"):
+        raise HTTPException(status_code=400, detail="ui_theme must be 'light' or 'dark'")
     database.set_setting(update.key, update.value)
     return {"success": True, "key": update.key, "value": update.value}
 
@@ -1369,6 +1372,58 @@ def save_posting_slots_endpoint(req: PostingSlotsUpdateRequest):
     return {"account_key": req.account_key, "slots": slots}
 
 
+class AddPostingSlotRequest(BaseModel):
+    account_key: str = "facebook:default"
+    day_of_week: int = -1
+    slot_time: str
+
+
+@app.post("/api/auto-post/slots/add")
+def add_posting_slot_endpoint(req: AddPostingSlotRequest):
+    slots = scheduler_service.add_posting_slot(req.account_key, req.day_of_week, req.slot_time)
+    return {"account_key": req.account_key, "slots": slots}
+
+
+class GeneratePostingSlotsRequest(BaseModel):
+    account_key: str = "facebook:default"
+    mode: str
+    days: Optional[List[int]] = None
+
+
+@app.post("/api/auto-post/slots/generate")
+def generate_posting_slots_endpoint(req: GeneratePostingSlotsRequest):
+    try:
+        slots = scheduler_service.generate_posting_slots(req.account_key, req.mode, req.days)
+        return {"account_key": req.account_key, "slots": slots}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/auto-post/schedule-settings")
+def get_schedule_settings_endpoint(account_key: str = "facebook:default"):
+    return scheduler_service.get_posting_schedule_settings(account_key)
+
+
+class ScheduleSettingsUpdateRequest(BaseModel):
+    account_key: str = "facebook:default"
+    timezone: Optional[str] = None
+    weekly_goal: Optional[int] = None
+    enabled_days: Optional[List[int]] = None
+
+
+@app.post("/api/auto-post/schedule-settings")
+def save_schedule_settings_endpoint(req: ScheduleSettingsUpdateRequest):
+    try:
+        return scheduler_service.save_posting_schedule_settings(
+            account_key=req.account_key,
+            timezone=req.timezone,
+            weekly_goal=req.weekly_goal,
+            enabled_days=req.enabled_days,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.delete("/api/auto-post/slots/{slot_id}")
 def delete_posting_slot_endpoint(slot_id: int):
     deleted = scheduler_service.delete_posting_slot(slot_id)
@@ -1452,6 +1507,57 @@ def cancel_scheduled_post_endpoint(post_id: int):
         code = 404 if "not found" in err.lower() else 400
         raise HTTPException(status_code=code, detail=err)
     return {"post": updated}
+
+
+class UpdatePostRequest(BaseModel):
+    caption: Optional[str] = None
+    hashtags: Optional[str] = None
+    category: Optional[str] = None
+    scheduled_at: Optional[str] = None
+    status: Optional[str] = None
+
+
+class CreatePublishingPostRequest(BaseModel):
+    account_key: str = "facebook:default"
+    platform: Optional[str] = None
+    status: str = "draft"
+    caption: str = ""
+    hashtags: str = ""
+    category: str = "General Astrology"
+    scheduled_at: Optional[str] = None
+    original_filename: str = "custom_post.mp4"
+    media_path: str = ""
+
+
+@app.get("/api/publishing/workspace")
+def get_publishing_workspace_endpoint(account_key: Optional[str] = None):
+    return scheduler_service.get_publishing_workspace(account_key=account_key)
+
+
+@app.patch("/api/auto-post/posts/{post_id}")
+def update_scheduled_post_endpoint(post_id: int, req: UpdatePostRequest):
+    updated, err = scheduler_service.update_scheduled_post(post_id, req.model_dump(exclude_unset=True))
+    if err:
+        code = 404 if "not found" in err.lower() else 400
+        raise HTTPException(status_code=code, detail=err)
+    return {"post": updated}
+
+
+@app.post("/api/auto-post/posts/{post_id}/publish-now")
+def publish_post_now_endpoint(post_id: int):
+    updated, err = scheduler_service.publish_post_now(post_id)
+    if err:
+        code = 404 if "not found" in err.lower() else 400
+        raise HTTPException(status_code=code, detail=err)
+    return {"post": updated}
+
+
+@app.post("/api/publishing/posts")
+def create_publishing_post_endpoint(req: CreatePublishingPostRequest):
+    created, err = scheduler_service.create_publishing_post(req.model_dump())
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    return {"post": created}
 
 
 def _check_platform_health(platform: str) -> dict:
@@ -1628,6 +1734,108 @@ def refresh_account_authorization(platform: str):
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Token refresh failed: {type(exc).__name__}")
     return {"account": _check_platform_health("youtube")}
+
+
+# =============================================================================
+# Community Inbox API (Post-Centric Comment Management)
+# =============================================================================
+
+class InboxReplyRequest(BaseModel):
+    reply_text: str
+    selected_level: Optional[str] = "custom"
+
+
+@app.get("/api/inbox/posts")
+def get_inbox_posts_endpoint(
+    platform: Optional[str] = None,
+    status: str = "all",
+    date: str = "all",
+    search: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Retrieve posts with comments for the Buffer-style Community Inbox."""
+    result = database.get_inbox_posts(
+        platform=platform,
+        status_filter=status,
+        date_filter=date,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    settings = database.get_settings()
+    result["safe_test_mode"] = settings.get("safe_test_mode", "true") == "true"
+    return result
+
+
+@app.get("/api/inbox/posts/{platform}/{post_id:path}/comments")
+def get_inbox_post_comments_endpoint(
+    platform: str,
+    post_id: str,
+    limit: int = 20,
+    offset: int = 0,
+    status: str = "all",
+):
+    """Retrieve selected post details and paginated comments with 3-level suggestions."""
+    decoded_post_id = urllib.parse.unquote(post_id)
+    result = database.get_inbox_post_comments(
+        platform=platform,
+        post_id=decoded_post_id,
+        limit=limit,
+        offset=offset,
+        status_filter=status,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Post not found")
+    settings = database.get_settings()
+    result["safe_test_mode"] = settings.get("safe_test_mode", "true") == "true"
+    return result
+
+
+@app.post("/api/inbox/comments/{platform}/{comment_id:path}/regenerate")
+def regenerate_inbox_suggestions_endpoint(platform: str, comment_id: str):
+    """Regenerate 3-level personalized suggestions for a single comment."""
+    decoded_id = urllib.parse.unquote(comment_id)
+    sugg = database.regenerate_inbox_comment_suggestions(platform, decoded_id)
+    if not sugg:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    return {"success": True, "suggestions": sugg}
+
+
+@app.post("/api/inbox/comments/{platform}/{comment_id:path}/reply")
+def send_inbox_reply_endpoint(platform: str, comment_id: str, payload: InboxReplyRequest):
+    """Explicitly send (or Safe-Test-record) a reply to a specific comment."""
+    decoded_id = urllib.parse.unquote(comment_id)
+    res = database.send_inbox_reply(
+        platform=platform,
+        comment_id=decoded_id,
+        reply_text=payload.reply_text,
+        selected_level=payload.selected_level or "custom",
+    )
+    if not res.get("success"):
+        reason = res.get("reason")
+        if reason == "comment_not_found":
+            raise HTTPException(status_code=404, detail=res.get("error", "Comment not found"))
+        if res.get("duplicate_blocked"):
+            raise HTTPException(status_code=409, detail=res.get("error", "Already replied"))
+        if reason in ("empty_reply_text", "invalid_comment_id", "unsupported_platform"):
+            raise HTTPException(status_code=400, detail=res.get("error", "Invalid request"))
+    return res
+
+
+@app.post("/api/inbox/sync")
+def sync_inbox_comments_endpoint(platform: Optional[str] = None):
+    """Sync comments from connected platforms into the Community Inbox."""
+    targets = [platform.lower()] if platform and platform.lower() in ("facebook", "instagram", "youtube") else ["facebook", "instagram", "youtube"]
+    results = {}
+    for p in targets:
+        if p == "facebook":
+            results["facebook"] = FacebookService.sync_facebook_comments()
+        elif p == "instagram":
+            results["instagram"] = InstagramService.sync_instagram_comments()
+        elif p == "youtube":
+            results["youtube"] = YouTubeService.sync_youtube_comments()
+    return {"success": True, "results": results}
 
 
 # Serve frontend

@@ -3,48 +3,93 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Gokul Social Publisher</title>
+  <title>Gokul Publisher</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23635BDB'/%3E%3Ctext x='16' y='21' text-anchor='middle' font-family='sans-serif' font-size='14' font-weight='bold' fill='white'%3EG%3C/text%3E%3C/svg%3E">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('gsp_theme');
+        document.documentElement.setAttribute('data-theme', (t === 'light' || t === 'dark') ? t : 'dark');
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
   <div class="app-container">
-    <!-- Sidebar -->
+    <!-- Sidebar (Buffer-Style Dark Charcoal) -->
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-badge">GSP</div>
         <h2>Gokul Publisher</h2>
       </div>
 
+      <div class="sidebar-new-wrap">
+        <button type="button" id="sidebar-new-btn" class="sidebar-new-btn">
+          <span>+</span>
+          <span>New</span>
+        </button>
+        <div id="pub-new-post-menu" class="pub-quick-menu hidden">
+          <button type="button" class="pub-quick-item" data-action="upload">📤 Upload Media</button>
+          <button type="button" class="pub-quick-item" data-action="draft">📝 Create Draft</button>
+          <button type="button" class="pub-quick-item" data-action="schedule">📅 Schedule Post</button>
+          <button type="button" class="pub-quick-item" data-action="queue">➕ Add to Queue</button>
+          <button type="button" class="pub-quick-item" data-action="bulk">⚡ Bulk Upload (12 Zodiac)</button>
+        </div>
+      </div>
+
       <nav class="nav-menu">
-        <button class="nav-item active" data-tab="dashboard">
-          <span class="icon">📊</span>
-          <span>Dashboard</span>
-        </button>
-        <button class="nav-item" data-tab="accounts">
-          <span class="icon">🔗</span>
-          <span>Accounts</span>
-        </button>
-        <button class="nav-item" data-tab="autoreply">
-          <span class="icon">⚡</span>
-          <span>Auto Reply</span>
-        </button>
-        <button class="nav-item" data-tab="activity">
-          <span class="icon">📋</span>
-          <span>Activity</span>
-        </button>
-        <button class="nav-item" data-tab="leads">
-          <span class="icon">🎯</span>
-          <span>Lead Management</span>
+        <button class="nav-item" data-tab="dashboard">
+          <span class="icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg></span>
+          <span>Home</span>
         </button>
         <button class="nav-item" data-tab="autopost">
-          <span class="icon">📅</span>
-          <span>Auto Post Scheduler</span>
+          <span class="icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/></svg></span>
+          <span>Create</span>
+        </button>
+        <button class="nav-item active" data-tab="publish">
+          <span class="icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="4" rx="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/></svg></span>
+          <span>Publish</span>
+        </button>
+        <button class="nav-item" data-tab="autoreply">
+          <span class="icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
+          <span>Community</span>
+        </button>
+        <button class="nav-item" data-tab="activity">
+          <span class="icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" x2="18" y1="20" y2="10"/><line x1="12" x2="12" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="14"/></svg></span>
+          <span>Insights</span>
         </button>
       </nav>
 
-      <div class="sidebar-status">
-        <div class="status-indicator online"></div>
-        <span>System Ready</span>
+      <!-- Channels Section -->
+      <div class="sidebar-channels-section">
+        <div class="sidebar-channels-header">
+          <span>Channels</span>
+          <button type="button" class="sidebar-channels-manage" onclick="switchTab('accounts')" title="Manage Connected Accounts">⚙</button>
+        </div>
+        <div id="pub-channel-list" class="pub-channel-list">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+
+      <!-- Bottom Account / Profile Section -->
+      <div class="sidebar-footer">
+        <button type="button" class="sidebar-profile-btn" onclick="switchTab('accounts')">
+          <div class="sidebar-profile-avatar">GM</div>
+          <div class="sidebar-profile-info">
+            <div class="sidebar-profile-name">Gokul Murugan</div>
+            <div class="sidebar-profile-sub">
+              <span class="status-indicator online"></span>
+              <span>Safe Test Mode</span>
+            </div>
+          </div>
+        </button>
+        <div class="sidebar-secondary-links">
+          <button type="button" class="sidebar-mini-link" onclick="switchTab('leads')">🎯 Leads</button>
+          <button type="button" class="sidebar-mini-link" onclick="switchTab('accounts')">🔗 Accounts</button>
+        </div>
       </div>
     </aside>
 
@@ -52,19 +97,27 @@
     <main class="content-area">
       <!-- Top Bar -->
       <header class="topbar">
-        <h1 id="page-title">Dashboard</h1>
-        <div class="master-toggle-container">
-          <span class="master-label">Auto Reply:</span>
-          <label class="switch">
-            <input type="checkbox" id="master-toggle">
-            <span class="slider round"></span>
-          </label>
-          <span id="master-status-badge" class="badge off">OFF</span>
+        <div class="topbar-left">
+          <button type="button" id="sidebar-mobile-toggle" class="btn btn-secondary btn-sm mobile-only-btn" aria-label="Toggle Navigation">☰</button>
+          <h1 id="page-title">Publishing</h1>
+        </div>
+        <div class="topbar-right">
+          <button type="button" id="theme-toggle-btn" class="theme-toggle-btn" onclick="window.GSPUI && GSPUI.toggleTheme()" title="Toggle Light/Dark Mode">
+            <span class="theme-toggle-label">Theme</span>
+          </button>
+          <div class="master-toggle-container">
+            <span class="master-label">Auto Reply:</span>
+            <label class="switch">
+              <input type="checkbox" id="master-toggle">
+              <span class="slider round"></span>
+            </label>
+            <span id="master-status-badge" class="badge off">OFF</span>
+          </div>
         </div>
       </header>
 
       <!-- View: Dashboard -->
-      <section id="view-dashboard" class="tab-view active">
+      <section id="view-dashboard" class="tab-view">
         <div class="hero-card">
           <div class="hero-content">
             <h2 id="hero-status-title">Automatic Comment Reply is Paused</h2>
@@ -200,27 +253,114 @@
         </div>
       </section>
 
-      <!-- View: Auto Reply -->
+      <!-- View: Auto Reply / Community Inbox -->
       <section id="view-autoreply" class="tab-view">
-        <div class="subtab-bar" role="tablist" aria-label="Auto Reply Subsections">
-          <button class="subtab-btn active" data-subtab="automatic" role="tab" aria-selected="true">
-            Automatic Replies
+        <div class="subtab-bar" role="tablist" aria-label="Community & Auto Reply Subsections">
+          <button class="subtab-btn active" data-subtab="inbox" role="tab" aria-selected="true">
+            💬 Community Inbox
+          </button>
+          <button class="subtab-btn" data-subtab="automatic" role="tab" aria-selected="false">
+            ⚙️ Auto Reply Controls
           </button>
           <button class="subtab-btn" data-subtab="approval" role="tab" aria-selected="false">
-            Approval Queue <span id="aq-pending-badge" class="aq-badge">0</span>
+            📋 Approval Queue <span id="aq-pending-badge" class="aq-badge">0</span>
           </button>
           <button class="subtab-btn" data-subtab="platform-settings" role="tab" aria-selected="false">
-            Platform Settings
+            🔧 Platform Settings
           </button>
         </div>
 
-        <div id="subview-automatic" class="subtab-view active">
+        <!-- Primary Experience: Buffer-Style Post-Centric Community Inbox -->
+        <div id="subview-inbox" class="subtab-view active">
+          <div class="ci-workspace" id="ci-workspace">
+            <!-- Middle Panel: Posts List -->
+            <aside class="ci-posts-pane" aria-label="Posts with comments">
+              <div class="ci-posts-header">
+                <div class="ci-posts-title-row">
+                  <h3>Posts</h3>
+                  <span id="ci-safe-pill" class="ci-safe-pill" title="Safe Testing Mode active">🛡️ Safe Mode</span>
+                  <button type="button" id="ci-sync-btn" class="secondary-btn sm" title="Sync latest comments from connected platforms">↻ Sync</button>
+                </div>
+
+                <div class="ci-platform-filters" role="group" aria-label="Filter posts by platform">
+                  <button type="button" class="ci-chip active" data-ci-platform="all">All</button>
+                  <button type="button" class="ci-chip" data-ci-platform="facebook">Facebook</button>
+                  <button type="button" class="ci-chip" data-ci-platform="instagram">Instagram</button>
+                  <button type="button" class="ci-chip" data-ci-platform="youtube">YouTube</button>
+                </div>
+
+                <div class="ci-secondary-filters">
+                  <select id="ci-status-filter" class="ci-select" aria-label="Filter by comment status">
+                    <option value="all">All Comments</option>
+                    <option value="unanswered">Unanswered Only</option>
+                  </select>
+                  <select id="ci-date-filter" class="ci-select" aria-label="Filter by date">
+                    <option value="all">All Dates</option>
+                    <option value="today">Today</option>
+                    <option value="7d">Last 7 Days</option>
+                    <option value="30d">Last 30 Days</option>
+                  </select>
+                </div>
+
+                <div class="ci-search-wrap">
+                  <input type="text" id="ci-search-input" class="ci-search-input" placeholder="Search posts or accounts..." />
+                </div>
+              </div>
+
+              <div id="ci-posts-list" class="ci-posts-list">
+                <div class="ci-loading-state">Loading posts...</div>
+              </div>
+            </aside>
+
+            <!-- Right Panel: Selected Post & Comments -->
+            <section class="ci-comments-pane" aria-label="Selected post and comments">
+              <div id="ci-feedback" class="aq-feedback hidden" role="status" aria-live="polite"></div>
+
+              <div id="ci-empty-right" class="ci-empty-right">
+                <div class="ci-empty-icon">💬</div>
+                <h3>Select a post to manage comments</h3>
+                <p>Choose a post from the middle column to view all its comments, 3-level reply suggestions, and reply inline.</p>
+              </div>
+
+              <div id="ci-post-detail" class="ci-post-detail hidden">
+                <div id="ci-post-header" class="ci-post-header"></div>
+
+                <div class="ci-comments-toolbar">
+                  <span id="ci-comments-showing" class="ci-comments-showing">0 comments</span>
+                  <div class="ci-comment-filter-pills">
+                    <button type="button" class="ci-chip sm active" data-ci-comment-filter="all">All</button>
+                    <button type="button" class="ci-chip sm" data-ci-comment-filter="unanswered">Unanswered</button>
+                  </div>
+                </div>
+
+                <div id="ci-comments-list" class="ci-comments-list"></div>
+
+                <div id="ci-load-more-wrap" class="ci-load-more-wrap hidden">
+                  <button type="button" id="ci-load-more-btn" class="secondary-btn">Load More Comments</button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div><!-- /subview-inbox -->
+
+        <div id="subview-automatic" class="subtab-view hidden">
         <div class="panel">
           <div class="panel-header">
             <h3>Auto Reply Controls</h3>
           </div>
 
           <div class="settings-list">
+            <div class="setting-row">
+              <div class="setting-info">
+                <h4>Appearance Theme</h4>
+                <p>Choose between Light Mode and Dark Mode across all Gokul Publisher screens.</p>
+              </div>
+              <select id="settings-theme-select" class="form-control" style="width:auto;min-width:140px;" onchange="window.GSPUI && GSPUI.applyTheme(this.value, true)">
+                <option value="dark">Dark Mode</option>
+                <option value="light">Light Mode</option>
+              </select>
+            </div>
+
             <div class="setting-row">
               <div class="setting-info">
                 <h4>Master Auto Reply</h4>
@@ -532,7 +672,7 @@
         </div>
       </section>
     <!-- Auto Post Scheduler Section -->
-    <section id="tab-autopost" class="view-section">
+    <section id="tab-autopost" class="view-section" style="display:none;">
       <div class="section-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
         <div>
           <h2>Auto Post Scheduler</h2>
@@ -606,80 +746,231 @@
 
       <!-- Subsection 2: Posting Schedule -->
       <div id="autopost-sub-schedule" class="autopost-subsection" style="display:none;">
-        <div class="card" style="padding:20px;">
-          <h3 style="margin-top:0;">Predefined Posting Slots</h3>
-          <p style="opacity:0.8;margin-bottom:16px;">Configure your preferred posting days and times per account. Videos are assigned in order.</p>
-          <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:end;margin-bottom:16px;">
+        <div class="card buffer-schedule-card" style="padding:20px;">
+          <div class="buffer-schedule-header">
             <div>
-              <label style="display:block;font-weight:600;margin-bottom:4px;">Account</label>
-              <select id="slot-account-select" class="form-control" style="padding:8px;">
+              <h3 style="margin:0;">Posting Schedule</h3>
+              <p style="opacity:0.75;margin:4px 0 0;font-size:0.88rem;">Configure weekly posting slots, timezone, and weekly goal per channel.</p>
+            </div>
+            <div id="schedule-feedback" class="schedule-feedback" style="display:none;"></div>
+          </div>
+
+          <!-- Top Controls: Account, Timezone, Weekly Goal -->
+          <div class="buffer-top-controls">
+            <div class="buffer-control-group">
+              <label for="slot-account-select">Channel</label>
+              <select id="slot-account-select" class="form-control">
                 <option value="facebook:default">Facebook Page (Default)</option>
                 <option value="instagram:default">Instagram Professional (Default)</option>
                 <option value="youtube:default">YouTube Channel (Default)</option>
               </select>
             </div>
-            <div>
-              <label style="display:block;font-weight:600;margin-bottom:4px;">Day</label>
-              <select id="slot-day-select" class="form-control" style="padding:8px;">
+
+            <div class="buffer-control-group">
+              <label for="schedule-timezone-select">Timezone</label>
+              <select id="schedule-timezone-select" class="form-control">
+                <option value="Asia/Kolkata">Asia/Kolkata (IST, UTC+5:30)</option>
+                <option value="UTC">UTC</option>
+                <option value="America/New_York">America/New_York (EST/EDT)</option>
+                <option value="America/Chicago">America/Chicago (CST/CDT)</option>
+                <option value="America/Denver">America/Denver (MST/MDT)</option>
+                <option value="America/Los_Angeles">America/Los_Angeles (PST/PDT)</option>
+                <option value="Europe/London">Europe/London (GMT/BST)</option>
+                <option value="Europe/Paris">Europe/Paris (CET/CEST)</option>
+                <option value="Asia/Dubai">Asia/Dubai (GST)</option>
+                <option value="Asia/Singapore">Asia/Singapore (SGT)</option>
+                <option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
+                <option value="Australia/Sydney">Australia/Sydney (AEST/AEDT)</option>
+              </select>
+            </div>
+
+            <div class="buffer-control-group">
+              <label>Weekly Posting Goal</label>
+              <div class="weekly-goal-control">
+                <button type="button" id="goal-decrease-btn" class="btn btn-secondary goal-step-btn" title="Decrease weekly goal">−</button>
+                <span id="weekly-goal-value" class="weekly-goal-value">14</span>
+                <span class="weekly-goal-unit">posts/wk</span>
+                <button type="button" id="goal-increase-btn" class="btn btn-secondary goal-step-btn" title="Increase weekly goal">+</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 7-Column Weekly Grid -->
+          <div id="weekly-schedule-grid" class="weekly-schedule-grid"></div>
+
+          <!-- Bottom Controls: Add Posting Time & Generate New Posting Slots -->
+          <div class="buffer-bottom-controls">
+            <div class="add-slot-bar">
+              <span class="bar-label">Add Posting Time:</span>
+              <select id="slot-day-select" class="form-control">
                 <option value="-1">Every Day</option>
+                <option value="6">Sunday</option>
                 <option value="0">Monday</option>
                 <option value="1">Tuesday</option>
                 <option value="2">Wednesday</option>
                 <option value="3">Thursday</option>
                 <option value="4">Friday</option>
                 <option value="5">Saturday</option>
-                <option value="6">Sunday</option>
               </select>
+              <select id="slot-hour-select" class="form-control time-part-select">
+                <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+                <option value="4">4</option><option value="5">5</option><option value="6">6</option>
+                <option value="7">7</option><option value="8">8</option><option value="9" selected>9</option>
+                <option value="10">10</option><option value="11">11</option><option value="12">12</option>
+              </select>
+              <span class="time-colon">:</span>
+              <select id="slot-minute-select" class="form-control time-part-select">
+                <option value="00" selected>00</option><option value="05">05</option><option value="10">10</option>
+                <option value="15">15</option><option value="20">20</option><option value="25">25</option>
+                <option value="30">30</option><option value="35">35</option><option value="40">40</option>
+                <option value="45">45</option><option value="50">50</option><option value="55">55</option>
+              </select>
+              <select id="slot-ampm-select" class="form-control time-part-select">
+                <option value="AM" selected>AM</option>
+                <option value="PM">PM</option>
+              </select>
+              <button type="button" id="add-slot-btn" class="btn btn-primary">Add Posting Slot</button>
             </div>
-            <div>
-              <label style="display:block;font-weight:600;margin-bottom:4px;">Time</label>
-              <input type="time" id="slot-time-input" value="09:00" class="form-control" style="padding:7px;" />
-            </div>
-            <button type="button" id="add-slot-btn" class="btn btn-primary">Add Slot</button>
-          </div>
-          <div id="posting-slots-list" style="display:grid;gap:8px;"></div>
-        </div>
-      </div>
 
-      <!-- Subsection 3: Scheduled Posts -->
-      <div id="autopost-sub-posts" class="autopost-subsection" style="display:none;">
-        <div class="card" style="padding:20px;">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
-            <div>
-              <h3 style="margin:0;">Scheduled Posts</h3>
-              <p style="margin:4px 0 0;opacity:0.75;font-size:0.9rem;">Drag and drop a post card onto another post card to swap/reschedule its time slot.</p>
+            <div class="generate-slots-bar">
+              <select id="generate-slots-select" class="form-control">
+                <option value="">Generate New Posting Slots...</option>
+                <option value="even">Generate evenly distributed slots</option>
+                <option value="periods">Generate morning, afternoon &amp; evening slots</option>
+                <option value="goal">Generate slots based on weekly posting goal</option>
+                <option value="regenerate_days">Regenerate enabled days only</option>
+                <option value="clear">Clear all slots</option>
+              </select>
+              <button type="button" id="generate-slots-btn" class="btn btn-secondary">Apply</button>
             </div>
-            <button type="button" id="refresh-scheduled-posts-btn" class="btn btn-secondary">Refresh</button>
           </div>
-          <div id="scheduler-status-summary" style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
-            <span style="padding:4px 10px;border-radius:12px;background:rgba(99,102,241,0.15);font-size:0.82rem;">Scheduled: <strong id="summary-count-scheduled">0</strong></span>
-            <span style="padding:4px 10px;border-radius:12px;background:rgba(16,185,129,0.15);font-size:0.82rem;">Published: <strong id="summary-count-published">0</strong></span>
-            <span style="padding:4px 10px;border-radius:12px;background:rgba(239,68,68,0.15);font-size:0.82rem;">Failed: <strong id="summary-count-failed">0</strong></span>
-            <span style="padding:4px 10px;border-radius:12px;background:rgba(245,158,11,0.15);font-size:0.82rem;">Retry Waiting: <strong id="summary-count-retry-waiting">0</strong></span>
-            <span style="padding:4px 10px;border-radius:12px;background:rgba(249,115,22,0.15);font-size:0.82rem;">Auth Required: <strong id="summary-count-auth-required">0</strong></span>
-          </div>
-          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px;align-items:center;">
-            <select id="scheduler-platform-filter" class="form-control" style="padding:6px 10px;max-width:180px;">
-              <option value="">All Platforms</option>
-              <option value="facebook">Facebook</option>
-              <option value="instagram">Instagram</option>
-              <option value="youtube">YouTube</option>
-            </select>
-            <select id="scheduler-status-filter" class="form-control" style="padding:6px 10px;max-width:220px;">
-              <option value="">All Statuses</option>
-              <option value="scheduled">Scheduled</option>
-              <option value="published">Published</option>
-              <option value="failed">Failed</option>
-              <option value="retry_waiting">Retry Waiting</option>
-              <option value="auth_required">Authentication Required</option>
-              <option value="cancelled">Cancelled</option>
-            </select>
-          </div>
-          <div id="scheduled-posts-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;"></div>
         </div>
       </div>
     </section>
 
+      <!-- View: Buffer-Style Publishing Workspace -->
+      <section id="view-publish" class="tab-view active">
+        <div class="pub-workspace-full">
+          <!-- Main Publishing Area -->
+          <div class="pub-main">
+            <!-- Channel Header -->
+            <div class="pub-channel-header">
+              <div class="pub-channel-identity">
+                <div id="pub-header-avatar" class="pub-avatar">🌐</div>
+                <div>
+                  <h3 id="pub-header-name" style="margin:0;">All Channels</h3>
+                  <div class="pub-header-meta">
+                    <span id="pub-header-tz" class="pub-meta-pill">🕒 Asia/Kolkata</span>
+                    <span id="pub-header-goal-text" class="pub-meta-pill">🎯 Weekly Goal: 0 / 14</span>
+                  </div>
+                </div>
+              </div>
+              <div class="pub-header-actions">
+                <div class="pub-goal-bar-wrap" title="Weekly Posting Goal Progress">
+                  <div id="pub-header-goal-bar" class="pub-goal-bar-fill" style="width:0%;"></div>
+                </div>
+                <button type="button" id="pub-new-post-btn" class="btn btn-green btn-sm">+ New Post</button>
+                <button type="button" id="pub-channel-settings-btn" class="btn btn-secondary btn-sm" title="Channel Posting Slots &amp; Settings">⚙ Settings</button>
+                <button type="button" id="refresh-scheduled-posts-btn" class="btn btn-secondary btn-sm">↻ Refresh</button>
+              </div>
+            </div>
+
+            <!-- Horizontal Publishing Tabs + View Mode Controls -->
+            <div class="pub-toolbar">
+              <div class="pub-tabs" role="tablist">
+                <button type="button" class="pub-tab active" data-pub-tab="queue">Queue <span class="pub-tab-count" id="pub-count-queue">0</span></button>
+                <button type="button" class="pub-tab" data-pub-tab="drafts">Drafts <span class="pub-tab-count" id="pub-count-drafts">0</span></button>
+                <button type="button" class="pub-tab" data-pub-tab="approvals">Approvals <span class="pub-tab-count" id="pub-count-approvals">0</span></button>
+                <button type="button" class="pub-tab" data-pub-tab="sent">Sent <span class="pub-tab-count" id="pub-count-sent">0</span></button>
+              </div>
+              <div class="pub-view-controls">
+                <div class="pub-view-switcher">
+                  <button type="button" class="pub-view-btn active" data-pub-view="list">☰ List</button>
+                  <button type="button" class="pub-view-btn" data-pub-view="calendar">📅 Calendar</button>
+                  <button type="button" class="pub-view-btn" data-pub-view="board">📋 Board</button>
+                </div>
+                <div id="pub-cal-subcontrols" class="pub-cal-subcontrols hidden">
+                  <button type="button" class="pub-cal-mode-btn active" data-cal-mode="month">Month</button>
+                  <button type="button" class="pub-cal-mode-btn" data-cal-mode="week">Week</button>
+                  <button type="button" class="pub-cal-mode-btn" data-cal-mode="day">Day</button>
+                  <button type="button" id="pub-cal-prev" class="btn btn-secondary btn-sm">‹</button>
+                  <span id="pub-cal-label" style="font-size:0.85rem;font-weight:600;min-width:110px;text-align:center;"></span>
+                  <button type="button" id="pub-cal-next" class="btn btn-secondary btn-sm">›</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Filters Bar -->
+            <div class="pub-filters">
+              <input type="text" id="pub-search-input" class="form-control pub-filter-input" placeholder="Search caption or filename..." />
+              <select id="scheduler-platform-filter" class="form-control pub-filter-select">
+                <option value="">All Platforms</option>
+                <option value="facebook">Facebook</option>
+                <option value="instagram">Instagram</option>
+                <option value="youtube">YouTube</option>
+              </select>
+              <select id="scheduler-status-filter" class="form-control pub-filter-select">
+                <option value="">All Statuses</option>
+                <option value="draft">Draft</option>
+                <option value="scheduled">Scheduled</option>
+                <option value="processing">Processing</option>
+                <option value="retry_waiting">Retry Waiting</option>
+                <option value="published">Published</option>
+                <option value="failed">Failed / Retry</option>
+                <option value="auth_required">Auth Required</option>
+                <option value="pending_approval">Pending Approval</option>
+                <option value="review_required">Review Required</option>
+              </select>
+              <div class="pub-lifecycle-pills" style="display:flex;gap:6px;align-items:center;">
+                <span class="pub-meta-pill" title="Jobs waiting to retry">Retry Waiting: <strong id="summary-count-retry-waiting">0</strong></span>
+                <span class="pub-meta-pill" title="Jobs needing re-authorization">Auth Required: <strong id="summary-count-auth-required">0</strong></span>
+              </div>
+              <select id="pub-category-filter" class="form-control pub-filter-select">
+                <option value="">All Categories</option>
+                <option value="Weekly Rasi Palan">Weekly Rasi Palan</option>
+                <option value="Monthly Rasi Palan">Monthly Rasi Palan</option>
+                <option value="Zodiac Characteristics">Zodiac Characteristics</option>
+                <option value="General Astrology">General Astrology</option>
+              </select>
+              <input type="date" id="pub-date-from" class="form-control pub-filter-date" title="From Date" />
+              <input type="date" id="pub-date-to" class="form-control pub-filter-date" title="To Date" />
+              <button type="button" id="pub-clear-filters-btn" class="btn btn-secondary btn-sm">Clear</button>
+            </div>
+
+            <!-- View Containers -->
+            <div id="pub-view-list" class="pub-view-container"></div>
+            <div id="pub-view-calendar" class="pub-view-container hidden"></div>
+            <div id="pub-view-board" class="pub-view-container hidden"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Publishing Modals -->
+      <div id="pub-post-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:560px;">
+          <div class="modal-header">
+            <h3 id="pub-modal-title">Post Details</h3>
+            <button type="button" class="close-btn" id="pub-modal-close">✕</button>
+          </div>
+          <div class="modal-body" id="pub-modal-body"></div>
+        </div>
+      </div>
+
+      <div id="pub-confirm-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:420px;">
+          <div class="modal-header">
+            <h3>Confirm Publish Now</h3>
+            <button type="button" class="close-btn" id="pub-confirm-close">✕</button>
+          </div>
+          <div class="modal-body">
+            <p id="pub-confirm-text" style="margin:0 0 16px;">Are you sure you want to publish this post immediately?</p>
+            <div style="display:flex;justify-content:flex-end;gap:10px;">
+              <button type="button" class="btn btn-secondary" id="pub-confirm-cancel">Cancel</button>
+              <button type="button" class="btn btn-primary" id="pub-confirm-ok">Publish Now</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </main>
   </div>
 
@@ -1010,6 +1301,8 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=2.2"></script>
+  <script src="/static/ui.js?v=1.0"></script>
+  <script src="/static/app.js?v=2.4"></script>
+  <script src="/static/inbox.js?v=1.0"></script>
 </body>
 </html>

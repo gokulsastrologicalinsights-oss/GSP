@@ -1,8 +1,10 @@
+import json
 import os
 import re
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import database
 
@@ -892,17 +894,96 @@ def analyze_batch_items(items: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+DEFAULT_TIMEZONE = "Asia/Kolkata"
+DEFAULT_WEEKLY_GOAL = 14
+DEFAULT_ENABLED_DAYS = [0, 1, 2, 3, 4, 5, 6]
+
+
+def _safe_zoneinfo(tz_name: Optional[str]) -> ZoneInfo:
+    try:
+        return ZoneInfo(tz_name or DEFAULT_TIMEZONE)
+    except Exception:
+        return ZoneInfo(DEFAULT_TIMEZONE)
+
+
+def get_posting_schedule_settings(account_key: str = "facebook:default") -> Dict[str, Any]:
+    conn = database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT account_key, timezone, weekly_goal, enabled_days FROM posting_schedule_settings WHERE account_key = ?",
+        (account_key,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return {
+            "account_key": account_key,
+            "timezone": DEFAULT_TIMEZONE,
+            "weekly_goal": DEFAULT_WEEKLY_GOAL,
+            "enabled_days": list(DEFAULT_ENABLED_DAYS),
+        }
+    try:
+        enabled = json.loads(row["enabled_days"])
+        enabled = sorted({int(d) for d in enabled if 0 <= int(d) <= 6})
+    except Exception:
+        enabled = list(DEFAULT_ENABLED_DAYS)
+    return {
+        "account_key": row["account_key"],
+        "timezone": row["timezone"] or DEFAULT_TIMEZONE,
+        "weekly_goal": int(row["weekly_goal"]) if row["weekly_goal"] is not None else DEFAULT_WEEKLY_GOAL,
+        "enabled_days": enabled,
+    }
+
+
+def save_posting_schedule_settings(
+    account_key: str,
+    timezone: Optional[str] = None,
+    weekly_goal: Optional[int] = None,
+    enabled_days: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    current = get_posting_schedule_settings(account_key)
+    new_tz = current["timezone"]
+    if timezone is not None:
+        # Validate timezone
+        ZoneInfo(timezone)
+        new_tz = timezone
+    new_goal = current["weekly_goal"]
+    if weekly_goal is not None:
+        new_goal = max(1, min(500, int(weekly_goal)))
+    new_days = current["enabled_days"]
+    if enabled_days is not None:
+        new_days = sorted({int(d) for d in enabled_days if 0 <= int(d) <= 6})
+
+    conn = database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO posting_schedule_settings (account_key, timezone, weekly_goal, enabled_days, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(account_key) DO UPDATE SET
+            timezone = excluded.timezone,
+            weekly_goal = excluded.weekly_goal,
+            enabled_days = excluded.enabled_days,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (account_key, new_tz, new_goal, json.dumps(new_days)),
+    )
+    conn.commit()
+    conn.close()
+    return get_posting_schedule_settings(account_key)
+
+
 def get_posting_slots(account_key: Optional[str] = None) -> List[Dict[str, Any]]:
     conn = database.get_connection()
     cursor = conn.cursor()
     if account_key:
         cursor.execute(
-            "SELECT * FROM posting_slots WHERE account_key = ? AND is_active = 1 ORDER BY slot_order ASC, day_of_week ASC, slot_time ASC",
+            "SELECT * FROM posting_slots WHERE account_key = ? AND is_active = 1 ORDER BY day_of_week ASC, slot_time ASC, slot_order ASC",
             (account_key,),
         )
     else:
         cursor.execute(
-            "SELECT * FROM posting_slots WHERE is_active = 1 ORDER BY account_key ASC, slot_order ASC, day_of_week ASC, slot_time ASC"
+            "SELECT * FROM posting_slots WHERE is_active = 1 ORDER BY account_key ASC, day_of_week ASC, slot_time ASC, slot_order ASC"
         )
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
@@ -910,16 +991,24 @@ def get_posting_slots(account_key: Optional[str] = None) -> List[Dict[str, Any]]
 
 
 def save_posting_slots(account_key: str, slots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Replace active posting slots for an account_key."""
+    """Replace active posting slots for an account_key, preventing duplicates."""
+    seen = set()
+    deduped: List[Tuple[int, str]] = []
+    for slot in slots:
+        day_of_week = int(slot.get("day_of_week", -1))
+        slot_time = str(slot.get("slot_time", "09:00")).strip()
+        key = (day_of_week, slot_time)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(key)
+
     conn = database.get_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM posting_slots WHERE account_key = ?", (account_key,))
-    for idx, slot in enumerate(slots):
-        day_of_week = int(slot.get("day_of_week", -1))
-        slot_time = str(slot.get("slot_time", "09:00")).strip()
+    for idx, (day_of_week, slot_time) in enumerate(deduped):
         cursor.execute(
             """
-            INSERT INTO posting_slots (account_key, day_of_week, slot_time, slot_order, is_active)
+            INSERT OR IGNORE INTO posting_slots (account_key, day_of_week, slot_time, slot_order, is_active)
             VALUES (?, ?, ?, ?, 1)
             """,
             (account_key, day_of_week, slot_time, idx),
@@ -927,6 +1016,87 @@ def save_posting_slots(account_key: str, slots: List[Dict[str, Any]]) -> List[Di
     conn.commit()
     conn.close()
     return get_posting_slots(account_key)
+
+
+def add_posting_slot(account_key: str, day_of_week: int, slot_time: str) -> List[Dict[str, Any]]:
+    """Add a posting slot to a specific day or to all enabled days (-1), preventing duplicates."""
+    slot_time = str(slot_time).strip()
+    if day_of_week == -1:
+        settings = get_posting_schedule_settings(account_key)
+        target_days = settings["enabled_days"] or list(DEFAULT_ENABLED_DAYS)
+    else:
+        target_days = [int(day_of_week)]
+
+    conn = database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT COALESCE(MAX(slot_order), -1) FROM posting_slots WHERE account_key = ?",
+        (account_key,),
+    )
+    max_order = int(cursor.fetchone()[0])
+    for d in target_days:
+        max_order += 1
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO posting_slots (account_key, day_of_week, slot_time, slot_order, is_active)
+            VALUES (?, ?, ?, ?, 1)
+            """,
+            (account_key, d, slot_time, max_order),
+        )
+    conn.commit()
+    conn.close()
+    return get_posting_slots(account_key)
+
+
+def generate_posting_slots(
+    account_key: str,
+    mode: str,
+    days: Optional[List[int]] = None,
+) -> List[Dict[str, Any]]:
+    """Generate posting slots according to mode: even, periods, goal, clear, regenerate_days."""
+    settings = get_posting_schedule_settings(account_key)
+    enabled_days = settings["enabled_days"] or list(DEFAULT_ENABLED_DAYS)
+
+    if mode == "clear":
+        return save_posting_slots(account_key, [])
+
+    if mode == "even":
+        times = ["09:00", "18:00"]
+        new_slots = [{"day_of_week": d, "slot_time": t} for d in enabled_days for t in times]
+        return save_posting_slots(account_key, new_slots)
+
+    if mode == "periods":
+        times = ["09:00", "14:00", "19:00"]
+        new_slots = [{"day_of_week": d, "slot_time": t} for d in enabled_days for t in times]
+        return save_posting_slots(account_key, new_slots)
+
+    if mode == "goal":
+        goal = max(1, int(settings.get("weekly_goal") or DEFAULT_WEEKLY_GOAL))
+        candidate_times = [
+            "09:00", "18:00", "12:00", "15:00", "20:00",
+            "10:30", "13:30", "16:30", "21:00", "08:00",
+            "11:00", "17:00", "19:30", "22:00",
+        ]
+        new_slots: List[Dict[str, Any]] = []
+        idx = 0
+        while len(new_slots) < goal and idx < goal * 2:
+            d = enabled_days[idx % len(enabled_days)]
+            t_idx = idx // len(enabled_days)
+            t = candidate_times[t_idx % len(candidate_times)]
+            new_slots.append({"day_of_week": d, "slot_time": t})
+            idx += 1
+        return save_posting_slots(account_key, new_slots)
+
+    if mode == "regenerate_days":
+        target_days = set(days if days is not None else enabled_days)
+        existing = [s for s in get_posting_slots(account_key) if int(s["day_of_week"]) not in target_days]
+        times = ["09:00", "18:00"]
+        for d in sorted(target_days):
+            for t in times:
+                existing.append({"day_of_week": d, "slot_time": t})
+        return save_posting_slots(account_key, existing)
+
+    raise ValueError(f"Unsupported slot generation mode: {mode}")
 
 
 def delete_posting_slot(slot_id: int) -> bool:
@@ -945,8 +1115,19 @@ def _compute_shared_available_slots(
     start_from: Optional[datetime] = None,
 ) -> List[str]:
     """Assign next available shared slot timestamps across all selected accounts."""
-    now = start_from or datetime.now()
-    primary_key = account_keys[0] if account_keys else "default"
+    primary_key = account_keys[0] if account_keys else "facebook:default"
+    settings = get_posting_schedule_settings(primary_key)
+    tz = _safe_zoneinfo(settings.get("timezone"))
+    if start_from is None:
+        now = datetime.now(tz)
+    elif start_from.tzinfo is None:
+        now = start_from.replace(tzinfo=tz)
+    else:
+        now = start_from.astimezone(tz)
+
+    enabled_days = set(settings.get("enabled_days") or DEFAULT_ENABLED_DAYS)
+    weekly_goal = int(settings.get("weekly_goal") or 0)
+
     slots = get_posting_slots(primary_key)
     if not slots:
         slots = [
@@ -964,30 +1145,55 @@ def _compute_shared_available_slots(
     occupied = {row["scheduled_at"] for row in cursor.fetchall()}
     conn.close()
 
+    # Count existing occupied posts per ISO week (year, week)
+    week_counts: Dict[Tuple[int, int], int] = {}
+    for ts in occupied:
+        try:
+            dt = datetime.fromisoformat(ts)
+            iso_cal = dt.isocalendar()
+            wk = (iso_cal.year, iso_cal.week)
+            week_counts[wk] = week_counts.get(wk, 0) + 1
+        except Exception:
+            pass
+
     assigned: List[str] = []
     day_offset = 0
-    while len(assigned) < count and day_offset < 120:
+    while len(assigned) < count and day_offset < 180:
         candidate_date = (now + timedelta(days=day_offset)).date()
         weekday = candidate_date.weekday()
-        for slot in slots:
+        if weekday not in enabled_days:
+            day_offset += 1
+            continue
+
+        iso_cal = candidate_date.isocalendar()
+        wk_key = (iso_cal.year, iso_cal.week)
+
+        # Collect matching slots for this weekday, sorted chronologically
+        day_slots = [
+            s for s in slots
+            if int(s.get("day_of_week", -1)) in (-1, weekday)
+        ]
+        day_slots.sort(key=lambda s: s.get("slot_time", "00:00"))
+
+        for slot in day_slots:
             if len(assigned) >= count:
                 break
-            slot_dow = int(slot.get("day_of_week", -1))
-            if slot_dow != -1 and slot_dow != weekday:
-                continue
+            if weekly_goal > 0 and week_counts.get(wk_key, 0) >= weekly_goal:
+                break
             hh_mm = slot["slot_time"]
             try:
                 hour, minute = map(int, hh_mm.split(":"))
             except ValueError:
                 continue
             candidate_dt = datetime(
-                candidate_date.year, candidate_date.month, candidate_date.day, hour, minute, 0
+                candidate_date.year, candidate_date.month, candidate_date.day, hour, minute, 0, tzinfo=tz
             )
             if candidate_dt <= now:
                 continue
             iso_str = candidate_dt.strftime("%Y-%m-%dT%H:%M:00")
             if iso_str not in occupied and iso_str not in assigned:
                 assigned.append(iso_str)
+                week_counts[wk_key] = week_counts.get(wk_key, 0) + 1
                 occupied.add(iso_str)
         day_offset += 1
 
@@ -1288,7 +1494,7 @@ def reschedule_post(post_id: int, new_scheduled_at: str) -> Tuple[Optional[Dict[
         conn.close()
         return None, "Scheduled post not found"
 
-    if post["status"] not in ("scheduled", "failed"):
+    if post["status"] not in ("scheduled", "failed", "retry_waiting", "draft", "pending_approval"):
         conn.close()
         return None, f"Cannot reschedule post in status '{post['status']}'"
 
@@ -1527,3 +1733,225 @@ def run_pending_scheduled_posts(now: Optional[datetime] = None) -> Dict[str, Any
         processed += 1
 
     return {"processed": processed, "safe_mode": safe_mode, "checked_at": now_iso}
+
+
+# ---------------------------------------------------------------------------
+# Publishing Workspace Helpers (Buffer-style Queue / Drafts / Approvals / Sent)
+# ---------------------------------------------------------------------------
+
+QUEUE_STATUSES = ("scheduled", "publishing", "uploading", "processing", "retry_waiting", "auth_required", "failed")
+SENT_STATUSES = ("published", "published_safe_mode")
+DRAFT_STATUSES = ("draft",)
+APPROVAL_STATUSES = ("pending_approval",)
+
+SAFE_STATUS_TRANSITIONS = {
+    "draft": {"scheduled", "pending_approval", "cancelled"},
+    "pending_approval": {"scheduled", "draft", "cancelled"},
+    "scheduled": {"draft", "pending_approval", "cancelled"},
+    "retry_waiting": {"scheduled", "draft", "cancelled"},
+    "failed": {"scheduled", "draft", "cancelled"},
+    "auth_required": {"scheduled", "draft", "cancelled"},
+    "cancelled": {"draft", "scheduled"},
+}
+
+
+def get_publishing_workspace(account_key: Optional[str] = None) -> Dict[str, Any]:
+    """Return channels, dynamic tab counts, and scheduled_posts for the Publishing Workspace."""
+    conn = database.get_connection()
+    cursor = conn.cursor()
+
+    # Connected accounts from accounts table
+    cursor.execute("SELECT platform, account_id, account_name, is_active FROM accounts WHERE is_active = 1")
+    active_accounts = {row["platform"]: dict(row) for row in cursor.fetchall()}
+
+    # Posting schedule settings per account_key
+    cursor.execute("SELECT account_key, timezone, weekly_goal FROM posting_schedule_settings")
+    settings_map = {row["account_key"]: dict(row) for row in cursor.fetchall()}
+
+    # Fetch all posts (non-cancelled by default, or include all for counts)
+    cursor.execute("SELECT * FROM scheduled_posts ORDER BY scheduled_at ASC, zodiac_index ASC, id ASC")
+    all_posts = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    default_channels = [
+        {"account_key": "facebook:default", "platform": "facebook", "default_name": "Facebook Page"},
+        {"account_key": "instagram:default", "platform": "instagram", "default_name": "Instagram Professional"},
+        {"account_key": "youtube:default", "platform": "youtube", "default_name": "YouTube Channel"},
+    ]
+
+    channels = []
+    for ch in default_channels:
+        ak = ch["account_key"]
+        plat = ch["platform"]
+        acc_info = active_accounts.get(plat)
+        ch_settings = settings_map.get(ak, {})
+        ch_posts = [p for p in all_posts if p.get("account_key") == ak]
+        queued_count = sum(1 for p in ch_posts if p.get("status") in QUEUE_STATUSES)
+        published_count = sum(1 for p in ch_posts if p.get("status") in SENT_STATUSES)
+        draft_count = sum(1 for p in ch_posts if p.get("status") in DRAFT_STATUSES)
+        approval_count = sum(1 for p in ch_posts if p.get("status") in APPROVAL_STATUSES)
+        failed_count = sum(1 for p in ch_posts if p.get("status") in ("failed", "retry_waiting", "auth_required"))
+
+        channels.append({
+            "account_key": ak,
+            "platform": plat,
+            "name": (acc_info.get("account_name") if acc_info else None) or ch["default_name"],
+            "connected": bool(acc_info),
+            "queued_count": queued_count,
+            "published_count": published_count,
+            "draft_count": draft_count,
+            "approval_count": approval_count,
+            "failed_count": failed_count,
+            "weekly_goal": int(ch_settings.get("weekly_goal") or 14),
+            "weekly_progress": published_count,
+            "timezone": ch_settings.get("timezone") or "Asia/Kolkata",
+        })
+
+    filtered_posts = [p for p in all_posts if not account_key or account_key == "all" or p.get("account_key") == account_key]
+
+    counts = {
+        "queue": sum(1 for p in filtered_posts if p.get("status") in QUEUE_STATUSES),
+        "drafts": sum(1 for p in filtered_posts if p.get("status") in DRAFT_STATUSES),
+        "approvals": sum(1 for p in filtered_posts if p.get("status") in APPROVAL_STATUSES),
+        "sent": sum(1 for p in filtered_posts if p.get("status") in SENT_STATUSES),
+        "failed": sum(1 for p in filtered_posts if p.get("status") in ("failed", "retry_waiting", "auth_required")),
+        "total": len(filtered_posts),
+    }
+
+    return {
+        "channels": channels,
+        "counts": counts,
+        "posts": filtered_posts,
+        "timezone": "Asia/Kolkata",
+    }
+
+
+def update_scheduled_post(post_id: int, updates: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Safely update post fields or transition status."""
+    conn = database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM scheduled_posts WHERE id = ?", (post_id,))
+    post = cursor.fetchone()
+    if not post:
+        conn.close()
+        return None, "Scheduled post not found"
+
+    current_status = post["status"]
+    new_status = updates.get("status")
+    if new_status and new_status != current_status:
+        allowed = SAFE_STATUS_TRANSITIONS.get(current_status, set())
+        if new_status not in allowed:
+            conn.close()
+            return None, f"Unsafe status transition from '{current_status}' to '{new_status}' is not allowed."
+
+    fields = []
+    params: List[Any] = []
+    for col in ("caption", "hashtags", "category", "scheduled_at", "status"):
+        if col in updates and updates[col] is not None:
+            fields.append(f"{col} = ?")
+            params.append(updates[col])
+
+    if not fields:
+        conn.close()
+        return dict(post), None
+
+    fields.append("updated_at = CURRENT_TIMESTAMP")
+    params.append(post_id)
+    cursor.execute(f"UPDATE scheduled_posts SET {', '.join(fields)} WHERE id = ?", params)
+    conn.commit()
+    cursor.execute("SELECT * FROM scheduled_posts WHERE id = ?", (post_id,))
+    updated = dict(cursor.fetchone())
+    conn.close()
+    return updated, None
+
+
+def publish_post_now(post_id: int) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Publish a post immediately, respecting safe_test_mode."""
+    conn = database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM scheduled_posts WHERE id = ?", (post_id,))
+    post = cursor.fetchone()
+    if not post:
+        conn.close()
+        return None, "Scheduled post not found"
+
+    if post["status"] in SENT_STATUSES:
+        conn.close()
+        return None, f"Post is already '{post['status']}'"
+
+    safe_mode = str(database.get_settings().get("safe_test_mode", "true")).lower() == "true"
+    now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    if safe_mode:
+        mock_id = f"safe_mock_{post['platform']}_{post_id}"
+        cursor.execute(
+            """
+            UPDATE scheduled_posts
+            SET status = 'published_safe_mode',
+                published_at = ?,
+                external_post_id = ?,
+                error_message = NULL,
+                error_category = NULL,
+                next_retry_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (now_iso, mock_id, post_id),
+        )
+        conn.commit()
+        cursor.execute("SELECT * FROM scheduled_posts WHERE id = ?", (post_id,))
+        row = cursor.fetchone()
+        updated = dict(row) if row else dict(post)
+        conn.close()
+        return updated, None
+
+    conn.close()
+    return None, "Live publishing is disabled in this environment."
+
+
+def create_publishing_post(data: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Create a new draft, approval, or scheduled post in scheduled_posts."""
+    account_key = data.get("account_key") or "facebook:default"
+    platform = data.get("platform") or account_key.split(":")[0]
+    status = data.get("status") or "draft"
+    if status not in ("draft", "pending_approval", "scheduled"):
+        return None, f"Invalid initial status '{status}'"
+
+    now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    scheduled_at = data.get("scheduled_at") or now_iso
+    caption = data.get("caption") or ""
+    hashtags = data.get("hashtags") or ""
+    category = data.get("category") or "General Astrology"
+    original_filename = data.get("original_filename") or "custom_post.mp4"
+    media_path = data.get("media_path") or ""
+
+    conn = database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO scheduled_posts (
+            account_key, platform, zodiac_index, zodiac_tamil, zodiac_english,
+            category, original_filename, media_path, caption, hashtags,
+            scheduled_at, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            account_key,
+            platform,
+            int(data.get("zodiac_index") or 0),
+            data.get("zodiac_tamil") or "",
+            data.get("zodiac_english") or "Custom",
+            category,
+            original_filename,
+            media_path,
+            caption,
+            hashtags,
+            scheduled_at,
+            status,
+        ),
+    )
+    post_id = cursor.lastrowid
+    conn.commit()
+    cursor.execute("SELECT * FROM scheduled_posts WHERE id = ?", (post_id,))
+    created = dict(cursor.fetchone())
+    conn.close()
+    return created, None
