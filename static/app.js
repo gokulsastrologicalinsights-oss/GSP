@@ -3285,9 +3285,11 @@ async function checkAccountHealth(platform = null) {
       : "";
     const durSec = p.duration_sec || p.duration || null;
     const durBadge = durSec ? `<span class="pub-thumb-dur">${Math.floor(durSec / 60)}:${String(Math.floor(durSec % 60)).padStart(2, "0")}</span>` : "";
+    const isVideo = postType === "Reel" || postType === "Video";
+    const playBadge = isVideo ? `<span class="pub-thumb-play">▶</span>` : "";
     const mediaThumbHtml = mediaSrc
-      ? `<div class="pub-card-thumb pub-card-thumb-compact"><video src="${mediaSrc}#t=0.5" muted preload="metadata" playsinline onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"></video><span class="pub-thumb-fallback" style="display:none;">🎬</span>${durBadge}</div>`
-      : `<div class="pub-card-thumb pub-card-thumb-compact"><span class="pub-thumb-fallback">🎬</span>${durBadge}</div>`;
+      ? `<div class="pub-card-thumb pub-card-thumb-compact"><video src="${mediaSrc}#t=0.5" muted preload="metadata" playsinline onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"></video><span class="pub-thumb-fallback" style="display:none;">🎬</span>${playBadge}${durBadge}</div>`
+      : `<div class="pub-card-thumb pub-card-thumb-compact"><span class="pub-thumb-fallback">🎬</span>${playBadge}${durBadge}</div>`;
 
     const captionText = p.caption || "(No caption)";
     const isLongCaption = captionText.length > 140 || captionText.includes("\n");
