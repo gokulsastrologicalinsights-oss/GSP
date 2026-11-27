@@ -4541,3 +4541,78 @@ textarea:focus,
     max-width: 100%;
   }
 }
+
+
+/* =========================================================
+   Community Inbox 3-Pane Layout & Dark-Mode Badge Contrast
+   ========================================================= */
+.ci-workspace {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr) 340px;
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .ci-workspace {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .ci-workspace {
+    grid-template-columns: 1fr;
+  }
+}
+
+.subtab-btn .badge,
+#approval-queue-badge {
+  background: rgba(99, 91, 219, 0.25);
+  color: #e2e8f0;
+  border: 1px solid rgba(99, 91, 219, 0.4);
+}
+
+[data-theme="light"] .subtab-btn .badge,
+[data-theme="light"] #approval-queue-badge {
+  background: #e2e8f0;
+  color: #1e293b;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+}
+
+#view-autoreply #approval-queue-badge,
+#view-autoreply .subtab-btn .badge {
+  background: rgba(99, 91, 219, 0.28) !important;
+  color: #f8fafc !important;
+  border: 1px solid rgba(99, 91, 219, 0.5) !important;
+}
+
+[data-theme="light"] #view-autoreply #approval-queue-badge,
+[data-theme="light"] #view-autoreply .subtab-btn .badge {
+  background: #e2e8f0 !important;
+  color: #1e293b !important;
+  border: 1px solid rgba(15, 23, 42, 0.14) !important;
+}
+
+/* Fix #aq-pending-badge dark mode contrast & 3-pane width/overflow */
+#view-autoreply #aq-pending-badge,
+#view-autoreply .aq-badge {
+  background: rgba(99, 91, 219, 0.28) !important;
+  color: #f8fafc !important;
+  border: 1px solid rgba(99, 91, 219, 0.5) !important;
+}
+
+[data-theme="light"] #view-autoreply #aq-pending-badge,
+[data-theme="light"] #view-autoreply .aq-badge {
+  background: #e2e8f0 !important;
+  color: #1e293b !important;
+  border: 1px solid rgba(15, 23, 42, 0.14) !important;
+}
+
+#view-autoreply .ci-posts-pane,
+#view-autoreply .ci-comments-pane,
+#view-autoreply .ci-reply-pane {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  box-sizing: border-box;
+}

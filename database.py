@@ -2658,7 +2658,7 @@ def get_inbox_posts(
         if search and search.strip():
             like_term = f"%{search.strip().lower()}%"
             having_clauses.append(
-                "(LOWER(COALESCE(caption, '')) LIKE ? OR LOWER(post_id) LIKE ? OR LOWER(COALESCE(account_name, '')) LIKE ?)"
+                "(LOWER(COALESCE(caption, '')) LIKE ? OR LOWER(a.post_id) LIKE ? OR LOWER(COALESCE(account_name, '')) LIKE ?)"
             )
             params.extend([like_term, like_term, like_term])
 

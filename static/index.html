@@ -102,6 +102,9 @@
           <h1 id="page-title">Publishing</h1>
         </div>
         <div class="topbar-right">
+          <button type="button" id="emergency-stop-btn" class="theme-toggle-btn" title="Emergency Stop: blocks all outbound publishing and comment replies when ON">
+            <span>🛑 Emergency Stop: <strong id="emergency-stop-label">ON</strong></span>
+          </button>
           <button type="button" id="theme-toggle-btn" class="theme-toggle-btn" onclick="window.GSPUI && GSPUI.toggleTheme()" title="Toggle Light/Dark Mode">
             <span class="theme-toggle-label">Theme</span>
           </button>
@@ -340,6 +343,11 @@
                 </div>
               </div>
             </section>
+            <!-- 3rd Pane: Selected Comment & Reply Workspace -->
+            <aside class="ci-reply-pane card" id="ci-reply-pane" aria-label="Selected comment details and reply workspace" style="padding:14px;">
+              <div style="font-size:0.82rem;font-weight:600;margin-bottom:6px;">Reply Workspace</div>
+              <div style="font-size:0.78rem;opacity:0.78;line-height:1.4;">Select a post and use Short, Medium, Detailed, or Write Custom Reply on any comment card to compose and approve replies safely.</div>
+            </aside>
           </div>
         </div><!-- /subview-inbox -->
 
