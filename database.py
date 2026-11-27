@@ -392,6 +392,52 @@ def init_db():
         if col_name not in act_cols:
             cursor.execute(f"ALTER TABLE activities ADD COLUMN {col_name} {col_type}")
 
+    # Account-level 30-minute automatic sync & reply mode state
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS account_sync_state (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        account_name TEXT,
+        auto_sync_enabled INTEGER DEFAULT 1,
+        sync_interval_minutes INTEGER DEFAULT 30,
+        reply_mode TEXT DEFAULT 'MANUAL_APPROVAL',
+        last_sync_at TEXT,
+        last_successful_sync_at TEXT,
+        next_sync_at TEXT,
+        cursor TEXT,
+        is_syncing INTEGER DEFAULT 0,
+        sync_claimed_at TEXT,
+        failed_sync_count INTEGER DEFAULT 0,
+        backoff_until TEXT,
+        last_error TEXT,
+        comments_processed INTEGER DEFAULT 0,
+        auto_replies_sent INTEGER DEFAULT 0,
+        manual_review_count INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(platform, account_id)
+    )
+    """)
+
+    # Sync & recovery audit history
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS sync_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        platform TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        sync_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        comments_fetched INTEGER DEFAULT 0,
+        comments_new INTEGER DEFAULT 0,
+        auto_replies_sent INTEGER DEFAULT 0,
+        manual_review_flagged INTEGER DEFAULT 0,
+        error_message TEXT,
+        started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP
+    )
+    """)
+
     conn.commit()
     conn.close()
 

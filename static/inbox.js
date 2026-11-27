@@ -660,3 +660,66 @@
 
   window.initCommunityInbox = initCommunityInbox;
 })();
+
+// Account-wise 30-minute Automatic Sync & Reply Mode Controls
+async function loadAccountSyncControls() {
+  const container = document.getElementById("inbox-account-sync-panel");
+  if (!container) return;
+  try {
+    const res = await fetch("/api/sync/accounts");
+    const data = await res.json();
+    const accounts = data.accounts || [];
+    if (!accounts.length) {
+      container.innerHTML = '<div style="padding:8px;color:#64748b;font-size:12px;">No connected accounts for auto-sync.</div>';
+      return;
+    }
+    container.innerHTML = `
+      <div style="padding:10px;border-bottom:1px solid #e2e8f0;background:#f8fafc;">
+        <div style="font-weight:600;font-size:13px;margin-bottom:8px;">Account Auto-Sync (30 min) & Reply Mode</div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;">
+          ${accounts.map(acc => `
+            <div style="border:1px solid #cbd5e1;border-radius:8px;padding:8px 10px;background:#fff;min-width:260px;font-size:12px;">
+              <div style="font-weight:600;">${acc.platform.toUpperCase()} — ${acc.account_name || acc.account_id}</div>
+              <div style="color:#475569;margin:4px 0;">
+                Last sync: ${acc.last_successful_sync_ist || 'Never'}<br/>
+                Next sync: ${acc.next_sync_ist || 'Pending'}<br/>
+                Processed: ${acc.comments_processed || 0} | Auto-sent: ${acc.auto_replies_sent || 0} | Review: ${acc.manual_review_count || 0} | Failed: ${acc.failed_sync_count || 0}
+              </div>
+              <div style="display:flex;gap:6px;align-items:center;margin-top:6px;">
+                <label><input type="checkbox" ${acc.auto_sync_enabled ? 'checked' : ''} onchange="updateAccountSyncSetting('${acc.platform}','${acc.account_id}',{auto_sync_enabled:this.checked})"/> Auto-Sync</label>
+                <select onchange="updateAccountSyncSetting('${acc.platform}','${acc.account_id}',{reply_mode:this.value})" style="font-size:11px;padding:2px;">
+                  <option value="MANUAL_APPROVAL" ${acc.reply_mode === 'MANUAL_APPROVAL' ? 'selected' : ''}>Manual Approval</option>
+                  <option value="AUTOMATIC_REPLY" ${acc.reply_mode === 'AUTOMATIC_REPLY' ? 'selected' : ''}>Automatic Reply</option>
+                  <option value="DISABLED" ${acc.reply_mode === 'DISABLED' ? 'selected' : ''}>Disabled</option>
+                </select>
+                <button onclick="triggerAccountSyncNow('${acc.platform}','${acc.account_id}')" style="font-size:11px;padding:2px 6px;cursor:pointer;">Sync Now</button>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+    `;
+  } catch (e) {
+    console.error("Failed to load account sync controls", e);
+  }
+}
+
+async function updateAccountSyncSetting(platform, accountId, payload) {
+  await fetch(`/api/sync/accounts/${encodeURIComponent(platform)}/${encodeURIComponent(accountId)}/settings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  await loadAccountSyncControls();
+}
+
+async function triggerAccountSyncNow(platform, accountId) {
+  await fetch(`/api/sync/accounts/${encodeURIComponent(platform)}/${encodeURIComponent(accountId)}/now`, {
+    method: "POST",
+  });
+  await loadAccountSyncControls();
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  loadAccountSyncControls();
+});

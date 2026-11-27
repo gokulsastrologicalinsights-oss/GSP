@@ -379,6 +379,18 @@ class YouTubeService:
         if videos:
             for video in videos:
                 vid = video["video_id"]
+                try:
+                    database.upsert_social_post(
+                        platform="youtube",
+                        account_id=channel_id,
+                        post_id=vid,
+                        caption=video.get("title") or "",
+                        thumbnail_url=f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+                        permalink=f"https://www.youtube.com/watch?v={vid}",
+                        media_type="VIDEO",
+                    )
+                except Exception:
+                    pass
                 ct_url = f"{YOUTUBE_API_BASE}/commentThreads"
                 ct_params = {
                     "part": "snippet",

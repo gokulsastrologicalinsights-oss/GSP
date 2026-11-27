@@ -886,6 +886,7 @@
               <div class="pub-view-controls">
                 <div class="pub-view-switcher">
                   <button type="button" class="pub-view-btn active" data-pub-view="list">☰ List</button>
+                  <button type="button" class="pub-view-btn" data-pub-view="grid">⊞ Grid</button>
                   <button type="button" class="pub-view-btn" data-pub-view="calendar">📅 Calendar</button>
                   <button type="button" class="pub-view-btn" data-pub-view="board">📋 Board</button>
                 </div>
@@ -903,6 +904,9 @@
             <!-- Filters Bar -->
             <div class="pub-filters">
               <input type="text" id="pub-search-input" class="form-control pub-filter-input" placeholder="Search caption or filename..." />
+              <select id="pub-account-filter" class="form-control pub-filter-select" title="Account">
+                <option value="all">All Accounts</option>
+              </select>
               <select id="scheduler-platform-filter" class="form-control pub-filter-select">
                 <option value="">All Platforms</option>
                 <option value="facebook">Facebook</option>
@@ -939,6 +943,7 @@
 
             <!-- View Containers -->
             <div id="pub-view-list" class="pub-view-container"></div>
+            <div id="pub-view-grid" class="pub-view-container hidden"></div>
             <div id="pub-view-calendar" class="pub-view-container hidden"></div>
             <div id="pub-view-board" class="pub-view-container hidden"></div>
           </div>

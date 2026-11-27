@@ -2482,26 +2482,44 @@ document.addEventListener('DOMContentLoaded', () => {
         })),
       };
 
-      const res = await fetch("/api/auto-post/schedule-multichannel", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      const summaryEl = document.getElementById("autopost-schedule-summary");
-      if (!res.ok) {
-        alert(data.detail || "Failed to schedule batch");
-        return;
+      const scheduleBtn = document.getElementById("autopost-schedule-btn");
+      if (scheduleBtn && scheduleBtn.disabled) return;
+      if (scheduleBtn) {
+        scheduleBtn.disabled = true;
+        scheduleBtn.dataset.origText = scheduleBtn.textContent;
+        scheduleBtn.textContent = "Scheduling...";
       }
-      const firstTime = data.posts && data.posts.length ? data.posts[0].scheduled_at.replace("T", " ") : "N/A";
-      summaryEl.style.display = "block";
-      summaryEl.innerHTML = `
-        <strong>Scheduled Successfully!</strong><br/>
-        Videos imported: ${data.videos_count} |
-        Channels selected: ${data.channels_count} |
-        Total publishing jobs: ${data.scheduled_count} |
-        First scheduled slot: ${firstTime}
-      `;
+      try {
+        const idemKey = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `gsp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const res = await fetch("/api/auto-post/schedule-multichannel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Idempotency-Key": idemKey },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        const summaryEl = document.getElementById("autopost-schedule-summary");
+        if (!res.ok) {
+          alert(data.detail || "Failed to schedule batch");
+          return;
+        }
+        const firstTime = data.posts && data.posts.length ? data.posts[0].scheduled_at.replace("T", " ") : "N/A";
+        summaryEl.style.display = "block";
+        summaryEl.innerHTML = `
+          <strong>Scheduled Successfully!</strong><br/>
+          Videos imported: ${data.videos_count} |
+          Channels selected: ${data.channels_count} |
+          Total publishing jobs: ${data.scheduled_count} |
+          First scheduled slot: ${firstTime}
+        `;
+        if (Array.isArray(data.posts) && data.posts.length && typeof window.insertScheduledPostsIntoWorkspace === "function") {
+          window.insertScheduledPostsIntoWorkspace(data.posts);
+        }
+      } finally {
+        if (scheduleBtn) {
+          scheduleBtn.disabled = false;
+          scheduleBtn.textContent = scheduleBtn.dataset.origText || "Schedule Batch";
+        }
+      }
     });
   }
 
@@ -3016,7 +3034,11 @@ async function checkAccountHealth(platform = null) {
     counts: { queue: 0, drafts: 0, approvals: 0, sent: 0, failed: 0, total: 0 },
     selectedChannel: "all",
     activeTab: "queue",       // queue | drafts | approvals | sent
-    activeView: "list",       // list | calendar | board
+    activeView: "list",       // list | grid | calendar | board
+    listSubMode: "timeline",  // timeline | table
+    listSort: { col: "scheduled_at", dir: "asc" },
+    listPage: 1,
+    listPageSize: 25,
     calMode: "month",         // month | week | day
     calCursor: new Date(),
     filters: {
@@ -3028,6 +3050,7 @@ async function checkAccountHealth(platform = null) {
       dateTo: "",
     },
     pendingConfirmPostId: null,
+    openMenuId: null,
   };
 
   const PLATFORM_ICON = { facebook: "📘", instagram: "📸", youtube: "▶️" };
@@ -3206,6 +3229,41 @@ async function checkAccountHealth(platform = null) {
     const arCount = PUB_STATE.posts.filter((p) => p.status === "auth_required").length;
     setCnt("summary-count-retry-waiting", rwCount);
     setCnt("summary-count-auth-required", arCount);
+
+    const accSel = document.getElementById("pub-account-filter");
+    if (accSel) {
+      const opts = [`<option value="all">All Accounts</option>`].concat(
+        PUB_STATE.channels.map((ch) => `<option value="${esc(ch.account_key)}">${esc(ch.name)} (${esc(ch.platform)})</option>`)
+      );
+      accSel.innerHTML = opts.join("");
+      accSel.value = PUB_STATE.selectedChannel || "all";
+    }
+  }
+
+  function getPostTypeBadge(p) {
+    const fn = (p.original_filename || "").toLowerCase();
+    if (p.post_type) return p.post_type;
+    if (fn.endsWith(".mp4") || fn.endsWith(".mov") || fn.endsWith(".webm")) {
+      return p.platform === "instagram" ? "Reel" : "Video";
+    }
+    if (fn.endsWith(".jpg") || fn.endsWith(".jpeg") || fn.endsWith(".png") || fn.endsWith(".webp")) return "Image";
+    return p.media_path ? "Video" : "Text";
+  }
+
+  function fmtDateGroupLabel(dateKey) {
+    if (!dateKey || dateKey === "Unscheduled") return "Unscheduled";
+    const now = new Date();
+    const todayStr = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+    const tom = new Date(now.getTime() + 86400000);
+    const tomStr = tom.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+    if (dateKey === todayStr) return `Today · ${dateKey}`;
+    if (dateKey === tomStr) return `Tomorrow · ${dateKey}`;
+    try {
+      const d = new Date(`${dateKey}T00:00:00+05:30`);
+      return d.toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata", weekday: "short", day: "numeric", month: "short", year: "numeric" });
+    } catch {
+      return dateKey;
+    }
   }
 
   function renderCard(p) {
@@ -3218,49 +3276,68 @@ async function checkAccountHealth(platform = null) {
     const canReschedule = ["scheduled", "failed", "retry_waiting", "draft", "pending_approval"].includes(st);
     const canMoveDraft = !isSent && !isDraft;
     const canRemove = !isSent && st !== "cancelled";
-
-    const multiCount = p.video_id ? PUB_STATE.posts.filter((x) => x.video_id === p.video_id).length : 1;
-    const multiBadge = multiCount > 1 ? `<span class="pub-meta-pill" title="Shared across ${multiCount} destination jobs">🔗 ${multiCount} platforms</span>` : "";
+    const postType = getPostTypeBadge(p);
     const statusHtml = window.GSPUI ? window.GSPUI.statusBadge(st) : `<span class="pub-badge pub-badge-${esc(st)}">${esc(st.replace(/_/g, " "))}</span>`;
+    const recoveredBadge = p.recovered_from_missed ? `<span class="pub-meta-pill" title="Recovered from missed schedule">↻ Recovered</span>` : "";
+
     const mediaSrc = (p.batch_id && p.original_filename)
       ? `/api/auto-post/media/${encodeURIComponent(p.batch_id)}/${encodeURIComponent(p.original_filename)}`
       : "";
+    const durSec = p.duration_sec || p.duration || null;
+    const durBadge = durSec ? `<span class="pub-thumb-dur">${Math.floor(durSec / 60)}:${String(Math.floor(durSec % 60)).padStart(2, "0")}</span>` : "";
     const mediaThumbHtml = mediaSrc
-      ? `<div class="pub-card-thumb pub-card-thumb-right"><video src="${mediaSrc}#t=0.5" muted preload="metadata" playsinline onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"></video><span class="pub-thumb-fallback" style="display:none;">🎬</span></div>`
-      : `<div class="pub-card-thumb pub-card-thumb-right"><span class="pub-thumb-fallback">🎬</span></div>`;
+      ? `<div class="pub-card-thumb pub-card-thumb-compact"><video src="${mediaSrc}#t=0.5" muted preload="metadata" playsinline onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"></video><span class="pub-thumb-fallback" style="display:none;">🎬</span>${durBadge}</div>`
+      : `<div class="pub-card-thumb pub-card-thumb-compact"><span class="pub-thumb-fallback">🎬</span>${durBadge}</div>`;
+
+    const captionText = p.caption || "(No caption)";
+    const isLongCaption = captionText.length > 140 || captionText.includes("\n");
 
     return `
-      <div class="pub-card" draggable="true" data-post-id="${p.id}">
-        <div class="pub-card-top">
-          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-            <span>${icon}</span>
-            <strong>${esc(p.account_key)}</strong>
+      <div class="pub-card pub-card-compact" draggable="${canReschedule ? "true" : "false"}" data-post-id="${p.id}" data-account-key="${esc(p.account_key)}" data-platform="${esc(p.platform)}">
+        <div class="pub-card-header">
+          <div class="pub-card-header-left">
+            <span class="pub-platform-icon" title="${esc(p.platform)}">${icon}</span>
+            <strong class="pub-account-name">${esc(p.account_key)}</strong>
+            <span class="pub-type-badge">${esc(postType)}</span>
             ${statusHtml}
-            ${multiBadge}
+            ${recoveredBadge}
           </div>
           <span class="pub-card-id">#${p.id}</span>
         </div>
-        <div class="pub-card-media-row pub-card-media-row-right">
-          <div style="min-width:0;flex:1;">
-            <div class="pub-card-title">${esc(p.original_filename || p.zodiac_english || "Untitled")}</div>
-            <div class="pub-card-caption">${esc(p.caption || "(No caption)")}</div>
+
+        <div class="pub-card-body">
+          <div class="pub-card-text-col">
+            <div class="pub-card-caption pub-caption-clamped" id="pub-cap-${p.id}">${esc(captionText)}</div>
+            ${isLongCaption ? `<button type="button" class="pub-expand-btn" data-id="${p.id}">View More</button>` : ""}
           </div>
           ${mediaThumbHtml}
         </div>
-        <div class="pub-card-meta">
-          <span>📅 ${fmtDateIST(p.scheduled_at)}</span>
-          <span>📁 ${esc(p.category || "General")}</span>
-          <span>🕒 Created: ${fmtDateIST(p.created_at)}</span>
-        </div>
+
         ${p.error_message ? `<div class="pub-card-error">⚠ ${esc(p.error_message)}</div>` : ""}
-        <div class="pub-card-actions">
-          ${canPublishNow ? `<button type="button" class="btn btn-primary btn-sm pub-act-publish" data-id="${p.id}">Publish Now</button>` : ""}
-          <button type="button" class="btn btn-secondary btn-sm pub-act-edit" data-id="${p.id}">Edit</button>
-          ${canReschedule ? `<button type="button" class="btn btn-secondary btn-sm pub-act-resched" data-id="${p.id}">Reschedule</button>` : ""}
-          ${canMoveDraft ? `<button type="button" class="btn btn-secondary btn-sm pub-act-draft" data-id="${p.id}">Move to Draft</button>` : ""}
-          ${isApproval ? `<button type="button" class="btn btn-primary btn-sm pub-act-approve" data-id="${p.id}">Approve</button>` : ""}
-          ${canRemove ? `<button type="button" class="btn btn-secondary btn-sm pub-act-remove" data-id="${p.id}">Remove from Queue</button>` : ""}
-          <button type="button" class="btn btn-secondary btn-sm pub-act-details" data-id="${p.id}">View Details</button>
+
+        <div class="pub-card-footer">
+          <div class="pub-card-footer-meta">
+            <span>🕒 ${p.scheduled_at ? fmtDateIST(p.scheduled_at) : `Created ${fmtDateIST(p.created_at)}`}</span>
+          </div>
+          <div class="pub-card-footer-actions">
+            ${isApproval ? `<button type="button" class="btn btn-primary btn-xs pub-act-approve" data-id="${p.id}">Approve</button>` : ""}
+            ${canPublishNow ? `<button type="button" class="btn btn-primary btn-xs pub-act-publish" data-id="${p.id}">Publish Now</button>` : ""}
+            <button type="button" class="btn btn-secondary btn-xs pub-act-edit" data-id="${p.id}" title="Edit Post">✎</button>
+            <div class="pub-more-wrap">
+              <button type="button" class="btn btn-secondary btn-xs pub-more-btn" data-id="${p.id}" aria-haspopup="true" aria-expanded="false" title="More Options">⋯</button>
+              <div class="pub-more-menu hidden" id="pub-more-menu-${p.id}" role="menu">
+                <button type="button" class="pub-menu-item pub-act-edit" data-id="${p.id}" role="menuitem">✎ Edit Post</button>
+                ${canPublishNow ? `<button type="button" class="pub-menu-item pub-act-publish" data-id="${p.id}" role="menuitem">🚀 Publish Now</button>` : ""}
+                <button type="button" class="pub-menu-item pub-act-duplicate" data-id="${p.id}" role="menuitem">❐ Duplicate Post</button>
+                ${canMoveDraft ? `<button type="button" class="pub-menu-item pub-act-draft" data-id="${p.id}" role="menuitem">📝 Move to Drafts</button>` : ""}
+                ${canPublishNow ? `<button type="button" class="pub-menu-item pub-act-recurring" data-id="${p.id}" role="menuitem">🔁 Make Recurring</button>` : ""}
+                ${canReschedule ? `<button type="button" class="pub-menu-item pub-act-reorder-up" data-id="${p.id}" role="menuitem">↑ Move Up</button>` : ""}
+                ${canReschedule ? `<button type="button" class="pub-menu-item pub-act-reorder-down" data-id="${p.id}" role="menuitem">↓ Move Down</button>` : ""}
+                <button type="button" class="pub-menu-item pub-act-details" data-id="${p.id}" role="menuitem">ℹ View Post Details</button>
+                ${canRemove ? `<div class="pub-menu-divider"></div><button type="button" class="pub-menu-item pub-menu-danger pub-act-remove" data-id="${p.id}" role="menuitem">🗑 Delete Post</button>` : ""}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     `;
@@ -3281,6 +3358,92 @@ async function checkAccountHealth(platform = null) {
       return;
     }
 
+    const modeBar = `
+      <div class="pub-list-mode-bar">
+        <span class="pub-list-count">${posts.length} post${posts.length === 1 ? "" : "s"}</span>
+        <div class="pub-list-mode-pills">
+          <button type="button" class="pub-submode-btn ${PUB_STATE.listSubMode === "timeline" ? "active" : ""}" data-submode="timeline">Timeline</button>
+          <button type="button" class="pub-submode-btn ${PUB_STATE.listSubMode === "table" ? "active" : ""}" data-submode="table">Table</button>
+        </div>
+      </div>
+    `;
+
+    if (PUB_STATE.listSubMode === "table") {
+      const { col, dir } = PUB_STATE.listSort;
+      const sorted = [...posts].sort((a, b) => {
+        const va = String(a[col] || "");
+        const vb = String(b[col] || "");
+        return dir === "asc" ? va.localeCompare(vb) : vb.localeCompare(va);
+      });
+      const totalPages = Math.max(1, Math.ceil(sorted.length / PUB_STATE.listPageSize));
+      if (PUB_STATE.listPage > totalPages) PUB_STATE.listPage = totalPages;
+      const start = (PUB_STATE.listPage - 1) * PUB_STATE.listPageSize;
+      const pageItems = sorted.slice(start, start + PUB_STATE.listPageSize);
+
+      const sortArrow = (c) => (col === c ? (dir === "asc" ? " ↑" : " ↓") : "");
+      let html = modeBar + `
+        <div class="pub-table-wrap">
+          <table class="pub-table">
+            <thead>
+              <tr>
+                <th class="pub-th-sort" data-sort="scheduled_at">Date & Time${sortArrow("scheduled_at")}</th>
+                <th>Post / Media</th>
+                <th class="pub-th-sort" data-sort="account_key">Account${sortArrow("account_key")}</th>
+                <th class="pub-th-sort" data-sort="platform">Platform${sortArrow("platform")}</th>
+                <th class="pub-th-sort" data-sort="status">Status${sortArrow("status")}</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${pageItems.map((p) => {
+                const icon = PLATFORM_ICON[p.platform] || "📢";
+                const st = p.status || "scheduled";
+                const statusHtml = window.GSPUI ? window.GSPUI.statusBadge(st) : esc(st);
+                return `
+                  <tr data-post-id="${p.id}">
+                    <td class="pub-td-time">${fmtDateIST(p.scheduled_at)}</td>
+                    <td class="pub-td-post">
+                      <div class="pub-td-title">${esc(p.original_filename || "Untitled")}</div>
+                      <div class="pub-td-cap">${esc((p.caption || "").slice(0, 80))}</div>
+                    </td>
+                    <td>${esc(p.account_key)}</td>
+                    <td>${icon} ${esc(p.platform)}</td>
+                    <td>${statusHtml}</td>
+                    <td class="pub-td-actions">
+                      <button type="button" class="btn btn-secondary btn-xs pub-act-edit" data-id="${p.id}">Edit</button>
+                      <button type="button" class="btn btn-secondary btn-xs pub-act-details" data-id="${p.id}">Details</button>
+                    </td>
+                  </tr>
+                `;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+        ${totalPages > 1 ? `
+          <div class="pub-pagination">
+            <button type="button" class="btn btn-secondary btn-xs" id="pub-page-prev" ${PUB_STATE.listPage <= 1 ? "disabled" : ""}>‹ Prev</button>
+            <span>Page ${PUB_STATE.listPage} of ${totalPages}</span>
+            <button type="button" class="btn btn-secondary btn-xs" id="pub-page-next" ${PUB_STATE.listPage >= totalPages ? "disabled" : ""}>Next ›</button>
+          </div>
+        ` : ""}
+      `;
+      container.innerHTML = html;
+      container.querySelectorAll(".pub-submode-btn").forEach((b) => b.addEventListener("click", () => {
+        PUB_STATE.listSubMode = b.dataset.submode;
+        renderListView();
+      }));
+      container.querySelectorAll(".pub-th-sort").forEach((th) => th.addEventListener("click", () => {
+        const c = th.dataset.sort;
+        if (PUB_STATE.listSort.col === c) PUB_STATE.listSort.dir = PUB_STATE.listSort.dir === "asc" ? "desc" : "asc";
+        else { PUB_STATE.listSort.col = c; PUB_STATE.listSort.dir = "asc"; }
+        renderListView();
+      }));
+      document.getElementById("pub-page-prev")?.addEventListener("click", () => { PUB_STATE.listPage--; renderListView(); });
+      document.getElementById("pub-page-next")?.addEventListener("click", () => { PUB_STATE.listPage++; renderListView(); });
+      bindCardActions(container);
+      return;
+    }
+
     const groups = {};
     for (const p of posts) {
       const k = dateKeyIST(p.scheduled_at);
@@ -3288,21 +3451,199 @@ async function checkAccountHealth(platform = null) {
       groups[k].push(p);
     }
 
-    let html = "";
+    let html = modeBar + `<div class="pub-timeline-centered">`;
     for (const dateKey of Object.keys(groups).sort()) {
-      html += `<div class="pub-date-group"><div class="pub-date-header">${esc(dateKey)}</div>`;
+      html += `<div class="pub-date-group"><div class="pub-date-header">${esc(fmtDateGroupLabel(dateKey))}</div>`;
       for (const p of groups[dateKey]) {
         html += `
-          <div class="pub-timeline-row">
+          <div class="pub-timeline-row" data-post-id="${p.id}">
             <div class="pub-timeline-time">${fmtTimeIST(p.scheduled_at)}</div>
-            <div>${renderCard(p)}</div>
+            <div class="pub-timeline-card-col">${renderCard(p)}</div>
           </div>
         `;
       }
       html += `</div>`;
     }
+    html += `</div>`;
     container.innerHTML = html;
+    container.querySelectorAll(".pub-submode-btn").forEach((b) => b.addEventListener("click", () => {
+      PUB_STATE.listSubMode = b.dataset.submode;
+      renderListView();
+    }));
     bindCardActions(container);
+    bindTimelineDragDrop(container);
+  }
+
+  function bindTimelineDragDrop(container) {
+    let dragId = null;
+    let dragAccount = null;
+    container.querySelectorAll(".pub-card-compact[draggable='true']").forEach((card) => {
+      card.addEventListener("dragstart", (e) => {
+        dragId = Number(card.dataset.postId);
+        dragAccount = card.dataset.accountKey;
+        card.classList.add("pub-dragging");
+        e.dataTransfer.effectAllowed = "move";
+      });
+      card.addEventListener("dragend", () => {
+        card.classList.remove("pub-dragging");
+        container.querySelectorAll(".pub-drag-over").forEach((el) => el.classList.remove("pub-drag-over"));
+      });
+      card.addEventListener("dragover", (e) => {
+        if (!dragId || card.dataset.accountKey !== dragAccount) return;
+        e.preventDefault();
+        card.classList.add("pub-drag-over");
+      });
+      card.addEventListener("dragleave", () => card.classList.remove("pub-drag-over"));
+      card.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        card.classList.remove("pub-drag-over");
+        const targetId = Number(card.dataset.postId);
+        if (!dragId || !targetId || dragId === targetId) return;
+        const srcPost = PUB_STATE.posts.find((x) => x.id === dragId);
+        const dstPost = PUB_STATE.posts.find((x) => x.id === targetId);
+        if (!srcPost || !dstPost || srcPost.account_key !== dstPost.account_key) {
+          if (window.GSPUI) window.GSPUI.toast("Reorder is only allowed within the same account lane", "error");
+          return;
+        }
+        if (!srcPost.scheduled_at || !dstPost.scheduled_at) return;
+        const srcTime = srcPost.scheduled_at;
+        const dstTime = dstPost.scheduled_at;
+        await fetch(`/api/auto-post/posts/${srcPost.id}/reschedule`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scheduled_at: dstTime }),
+        });
+        await fetch(`/api/auto-post/posts/${dstPost.id}/reschedule`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scheduled_at: srcTime }),
+        });
+        if (window.GSPUI) window.GSPUI.toast("Queue order updated", "success");
+        await fetchWorkspace();
+      });
+    });
+  }
+
+  function renderGridView() {
+    const container = document.getElementById("pub-view-grid");
+    if (!container) return;
+    const posts = getFilteredPosts();
+    if (!posts.length) {
+      container.innerHTML = window.GSPUI
+        ? window.GSPUI.emptyState({
+            icon: "⊞",
+            title: `No posts in ${PUB_STATE.activeTab}`,
+            description: "Adjust your filters or create a new post to populate the grid."
+          })
+        : `<div style="padding:36px;text-align:center;opacity:0.7;">No posts in ${esc(PUB_STATE.activeTab)} matching current filters.</div>`;
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="pub-grid">
+        ${posts.map((p) => {
+          const icon = PLATFORM_ICON[p.platform] || "📢";
+          const st = p.status || "scheduled";
+          const statusHtml = window.GSPUI ? window.GSPUI.statusBadge(st) : `<span class="pub-badge pub-badge-${esc(st)}">${esc(st)}</span>`;
+          const mediaSrc = (p.batch_id && p.original_filename)
+            ? `/api/auto-post/media/${encodeURIComponent(p.batch_id)}/${encodeURIComponent(p.original_filename)}`
+            : "";
+          const thumbHtml = mediaSrc
+            ? `<video src="${mediaSrc}#t=0.5" muted preload="metadata" playsinline onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"></video><span class="pub-thumb-fallback" style="display:none;">🎬</span>`
+            : `<span class="pub-thumb-fallback">🎬</span>`;
+          return `
+            <div class="pub-grid-card" data-post-id="${p.id}">
+              <div class="pub-grid-thumb">
+                ${thumbHtml}
+                <span class="pub-grid-platform" title="${esc(p.platform)}">${icon}</span>
+                <span class="pub-grid-type">${esc(getPostTypeBadge(p))}</span>
+              </div>
+              <div class="pub-grid-body">
+                <div class="pub-grid-meta">
+                  ${statusHtml}
+                  <span class="pub-grid-time">${fmtDateIST(p.scheduled_at)}</span>
+                </div>
+                <div class="pub-grid-caption">${esc(p.caption || p.original_filename || "(No caption)")}</div>
+                <div class="pub-grid-footer">
+                  <span class="pub-grid-account">${esc(p.account_key)}</span>
+                  <div class="pub-grid-actions">
+                    <button type="button" class="btn btn-secondary btn-xs pub-act-edit" data-id="${p.id}" title="Edit">✎</button>
+                    <button type="button" class="btn btn-secondary btn-xs pub-act-details" data-id="${p.id}" title="Details">ℹ</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    `;
+    bindCardActions(container);
+  }
+
+  function openRecurringModal(postId) {
+    const p = PUB_STATE.posts.find((x) => x.id === postId);
+    if (!p) return;
+    const modal = document.getElementById("pub-post-modal");
+    const title = document.getElementById("pub-modal-title");
+    const body = document.getElementById("pub-modal-body");
+    if (!modal || !body) return;
+    title.textContent = `Make Recurring #${p.id}`;
+    body.innerHTML = `
+      <div style="display:grid;gap:12px;">
+        <div style="font-size:0.85rem;opacity:0.85;">Schedule recurring copies of <strong>${esc(p.original_filename || "this post")}</strong> for <strong>${esc(p.account_key)}</strong>.</div>
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px;">Cadence</label>
+          <select id="pub-rec-cadence" class="form-control">
+            <option value="7">Weekly (every 7 days)</option>
+            <option value="14">Bi-weekly (every 14 days)</option>
+            <option value="30">Monthly (every 30 days)</option>
+          </select>
+        </div>
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px;">Number of Occurrences</label>
+          <input id="pub-rec-count" type="number" class="form-control" min="1" max="12" value="3" />
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;">
+          <button type="button" class="btn btn-secondary" onclick="document.getElementById('pub-post-modal').classList.add('hidden')">Cancel</button>
+          <button type="button" id="pub-rec-submit" class="btn btn-primary">Schedule Recurring</button>
+        </div>
+      </div>
+    `;
+    modal.classList.remove("hidden");
+    document.getElementById("pub-rec-submit")?.addEventListener("click", async () => {
+      const days = Number(document.getElementById("pub-rec-cadence").value) || 7;
+      const count = Math.min(12, Math.max(1, Number(document.getElementById("pub-rec-count").value) || 1));
+      const baseDate = p.scheduled_at ? new Date(p.scheduled_at) : new Date();
+      for (let i = 1; i <= count; i++) {
+        const nextD = new Date(baseDate.getTime() + i * days * 86400000);
+        const iso = nextD.toLocaleString("sv-SE", { timeZone: "Asia/Kolkata" }).replace(" ", "T");
+        await fetch("/api/publishing/posts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            account_key: p.account_key,
+            platform: p.platform,
+            status: "scheduled",
+            caption: p.caption || "",
+            hashtags: p.hashtags || "",
+            category: p.category || "General Astrology",
+            scheduled_at: iso,
+            original_filename: p.original_filename || "recurring_post.mp4",
+            media_path: p.media_path || "",
+          }),
+        });
+      }
+      modal.classList.add("hidden");
+      if (window.GSPUI) window.GSPUI.toast(`Scheduled ${count} recurring post(s)`, "success");
+      await fetchWorkspace();
+    });
+  }
+
+  function toLocalYMD(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
   }
 
   function renderCalendarView() {
@@ -3313,7 +3654,7 @@ async function checkAccountHealth(platform = null) {
     const label = document.getElementById("pub-cal-label");
 
     if (PUB_STATE.calMode === "day") {
-      const isoDay = cur.toISOString().slice(0, 10);
+      const isoDay = toLocalYMD(cur);
       if (label) label.textContent = isoDay;
       const dayPosts = posts.filter((p) => dateKeyIST(p.scheduled_at) === isoDay);
       container.innerHTML = `
@@ -3335,7 +3676,7 @@ async function checkAccountHealth(platform = null) {
         d.setDate(start.getDate() + i);
         dates.push(d);
       }
-      if (label) label.textContent = `Week of ${dates[0].toISOString().slice(0, 10)}`;
+      if (label) label.textContent = `Week of ${toLocalYMD(dates[0])}`;
     } else {
       const y = cur.getFullYear(), m = cur.getMonth();
       if (label) label.textContent = cur.toLocaleString("en-IN", { month: "long", year: "numeric" });
@@ -3352,7 +3693,7 @@ async function checkAccountHealth(platform = null) {
     const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     let html = `<div class="pub-cal-grid">${dayNames.map((d) => `<div class="pub-cal-day-hdr">${d}</div>`).join("")}`;
     for (const d of dates) {
-      const iso = d.toISOString().slice(0, 10);
+      const iso = toLocalYMD(d);
       const dayPosts = posts.filter((p) => dateKeyIST(p.scheduled_at) === iso);
       html += `
         <div class="pub-cal-cell" data-date="${iso}">
@@ -3428,15 +3769,18 @@ async function checkAccountHealth(platform = null) {
     renderSidebar();
     renderHeaderAndTabs();
     const listEl = document.getElementById("pub-view-list");
+    const gridEl = document.getElementById("pub-view-grid");
     const calEl = document.getElementById("pub-view-calendar");
     const boardEl = document.getElementById("pub-view-board");
     const calSub = document.getElementById("pub-cal-subcontrols");
     if (listEl) listEl.classList.toggle("hidden", PUB_STATE.activeView !== "list");
+    if (gridEl) gridEl.classList.toggle("hidden", PUB_STATE.activeView !== "grid");
     if (calEl) calEl.classList.toggle("hidden", PUB_STATE.activeView !== "calendar");
     if (boardEl) boardEl.classList.toggle("hidden", PUB_STATE.activeView !== "board");
     if (calSub) calSub.classList.toggle("hidden", PUB_STATE.activeView !== "calendar");
 
     if (PUB_STATE.activeView === "list") renderListView();
+    else if (PUB_STATE.activeView === "grid") renderGridView();
     else if (PUB_STATE.activeView === "calendar") renderCalendarView();
     else renderBoardView();
   }
@@ -3476,15 +3820,19 @@ async function checkAccountHealth(platform = null) {
     const title = document.getElementById("pub-modal-title");
     const body = document.getElementById("pub-modal-body");
     if (!modal || !body) return;
-    title.textContent = editMode ? `Edit Post #${p.id}` : `Post Details #${p.id}`;
+    title.textContent = editMode ? `Edit Post #${p.id}` : `Full Caption & Details #${p.id}`;
     body.innerHTML = `
       <div style="display:grid;gap:10px;">
         <div><strong>Channel:</strong> ${esc(p.account_key)} (${esc(p.platform)})</div>
         <div><strong>Status:</strong> ${esc(p.status)}</div>
         <div><strong>File:</strong> ${esc(p.original_filename)}</div>
         <div>
-          <label style="display:block;font-weight:600;margin-bottom:4px;">Caption</label>
-          <textarea id="pub-edit-caption" class="form-control" rows="3" ${editMode ? "" : "readonly"}>${esc(p.caption)}</textarea>
+          <label style="display:block;font-weight:600;margin-bottom:4px;">Full Caption & Contact Details</label>
+          <textarea id="pub-edit-caption" class="form-control" rows="8" style="width:100%;box-sizing:border-box;white-space:pre-wrap;" ${editMode ? "" : "readonly"}>${esc(p.caption || "")}</textarea>
+        </div>
+        <div>
+          <label style="display:block;font-weight:600;margin-bottom:4px;">Hashtags</label>
+          <textarea id="pub-edit-hashtags" class="form-control" rows="3" style="width:100%;box-sizing:border-box;white-space:pre-wrap;" ${editMode ? "" : "readonly"}>${esc(p.hashtags || "")}</textarea>
         </div>
         <div>
           <label style="display:block;font-weight:600;margin-bottom:4px;">Scheduled At (Asia/Kolkata)</label>
@@ -3500,8 +3848,9 @@ async function checkAccountHealth(platform = null) {
     if (saveBtn) {
       saveBtn.addEventListener("click", async () => {
         const caption = document.getElementById("pub-edit-caption").value;
+        const hashtags = document.getElementById("pub-edit-hashtags").value;
         const dt = document.getElementById("pub-edit-time").value;
-        await apiPatchPost(p.id, { caption, scheduled_at: dt ? `${dt}:00` : undefined });
+        await apiPatchPost(p.id, { caption, hashtags, scheduled_at: dt ? `${dt}:00` : undefined });
         modal.classList.add("hidden");
       });
     }
@@ -3538,27 +3887,42 @@ async function checkAccountHealth(platform = null) {
       </div>
     `;
     modal.classList.remove("hidden");
-    document.getElementById("pub-create-submit-btn")?.addEventListener("click", async () => {
-      const account_key = document.getElementById("pub-new-channel").value;
-      const caption = document.getElementById("pub-new-caption").value;
-      const dt = document.getElementById("pub-new-time").value;
-      const res = await fetch("/api/publishing/posts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          account_key,
-          status: defaultStatus,
-          caption,
-          scheduled_at: dt ? `${dt}:00` : undefined,
-        }),
-      });
-      if (!res.ok) {
-        if (window.GSPUI) window.GSPUI.toast("Failed to create post", "error");
-        return;
+    document.getElementById("pub-create-submit-btn")?.addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      if (btn.disabled) return;
+      btn.disabled = true;
+      const origText = btn.textContent;
+      btn.textContent = "Scheduling...";
+      try {
+        const account_key = document.getElementById("pub-new-channel").value;
+        const caption = document.getElementById("pub-new-caption").value;
+        const dt = document.getElementById("pub-new-time").value;
+        const res = await fetch("/api/publishing/posts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            account_key,
+            status: defaultStatus,
+            caption,
+            scheduled_at: dt ? `${dt}:00` : undefined,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          if (window.GSPUI) window.GSPUI.toast(data.detail || "Failed to create post", "error");
+          return;
+        }
+        modal.classList.add("hidden");
+        if (window.GSPUI) window.GSPUI.toast("Post scheduled", "success");
+        if (data.post && typeof window.insertScheduledPostsIntoWorkspace === "function") {
+          window.insertScheduledPostsIntoWorkspace([data.post]);
+        } else {
+          await fetchWorkspace();
+        }
+      } finally {
+        btn.disabled = false;
+        btn.textContent = origText;
       }
-      modal.classList.add("hidden");
-      if (window.GSPUI) window.GSPUI.toast("Post created", "success");
-      await fetchWorkspace();
     });
   }
 
@@ -3574,6 +3938,7 @@ async function checkAccountHealth(platform = null) {
     });
     root.querySelectorAll(".pub-act-edit").forEach((b) => b.addEventListener("click", () => openPostModal(Number(b.dataset.id), true)));
     root.querySelectorAll(".pub-act-resched").forEach((b) => b.addEventListener("click", () => openPostModal(Number(b.dataset.id), true)));
+    root.querySelectorAll(".pub-act-full-caption").forEach((b) => b.addEventListener("click", () => openPostModal(Number(b.dataset.id), false)));
     root.querySelectorAll(".pub-act-details").forEach((b) => b.addEventListener("click", () => openPostModal(Number(b.dataset.id), false)));
     root.querySelectorAll(".pub-act-draft").forEach((b) => b.addEventListener("click", async () => {
       await apiPatchPost(Number(b.dataset.id), { status: "draft" });
@@ -3586,17 +3951,108 @@ async function checkAccountHealth(platform = null) {
     root.querySelectorAll(".pub-act-remove").forEach((b) => b.addEventListener("click", async () => {
       const ok = window.GSPUI
         ? await window.GSPUI.confirm({
-            title: "Remove from Queue",
-            message: "Are you sure you want to remove this post from the publishing queue?",
-            confirmText: "Remove",
+            title: "Delete Post",
+            message: "Are you sure you want to delete this post from the queue? Original media files will be preserved.",
+            confirmText: "Delete",
             variant: "danger"
           })
-        : window.confirm("Remove this post from the queue?");
+        : window.confirm("Delete this post? Original media files will be preserved.");
       if (!ok) return;
-      await fetch(`/api/auto-post/posts/${Number(b.dataset.id)}/cancel`, { method: "POST" });
-      if (window.GSPUI) window.GSPUI.toast("Post removed from queue", "info");
+      const res = await fetch(`/api/auto-post/posts/${Number(b.dataset.id)}/cancel`, { method: "POST" });
+      if (!res.ok) {
+        if (window.GSPUI) window.GSPUI.toast("Failed to delete post", "error");
+        return;
+      }
+      if (window.GSPUI) window.GSPUI.toast("Post deleted (media preserved)", "info");
       await fetchWorkspace();
     }));
+
+    root.querySelectorAll(".pub-expand-btn").forEach((b) => b.addEventListener("click", () => {
+      const capEl = document.getElementById(`pub-cap-${Number(b.dataset.id)}`);
+      if (!capEl) return;
+      const expanded = capEl.classList.toggle("pub-caption-clamped");
+      b.textContent = expanded ? "View More" : "Show Less";
+    }));
+
+    root.querySelectorAll(".pub-more-btn").forEach((b) => b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const id = Number(b.dataset.id);
+      const menu = document.getElementById(`pub-more-menu-${id}`);
+      if (!menu) return;
+      const wasHidden = menu.classList.contains("hidden");
+      document.querySelectorAll(".pub-more-menu").forEach((m) => m.classList.add("hidden"));
+      document.querySelectorAll(".pub-more-btn").forEach((btn) => btn.setAttribute("aria-expanded", "false"));
+      if (wasHidden) {
+        menu.classList.remove("hidden", "pub-menu-up");
+        b.setAttribute("aria-expanded", "true");
+        const rect = menu.getBoundingClientRect();
+        if (rect.bottom > window.innerHeight - 12) {
+          menu.classList.add("pub-menu-up");
+        }
+      }
+    }));
+
+    root.querySelectorAll(".pub-act-duplicate").forEach((b) => b.addEventListener("click", async () => {
+      const p = PUB_STATE.posts.find((x) => x.id === Number(b.dataset.id));
+      if (!p) return;
+      b.disabled = true;
+      try {
+        const res = await fetch("/api/publishing/posts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            account_key: p.account_key,
+            platform: p.platform,
+            status: "draft",
+            caption: p.caption || "",
+            hashtags: p.hashtags || "",
+            category: p.category || "General Astrology",
+            original_filename: p.original_filename || "duplicate_post.mp4",
+            media_path: p.media_path || "",
+          }),
+        });
+        if (!res.ok) throw new Error("Duplicate failed");
+        if (window.GSPUI) window.GSPUI.toast("Post duplicated to Drafts", "success");
+        await fetchWorkspace();
+      } catch (err) {
+        if (window.GSPUI) window.GSPUI.toast(err.message || "Duplicate failed", "error");
+      } finally {
+        b.disabled = false;
+      }
+    }));
+
+    root.querySelectorAll(".pub-act-recurring").forEach((b) => b.addEventListener("click", () => {
+      openRecurringModal(Number(b.dataset.id));
+    }));
+
+    const handleReorder = async (postId, direction) => {
+      const p = PUB_STATE.posts.find((x) => x.id === postId);
+      if (!p || !p.scheduled_at) return;
+      const lane = PUB_STATE.posts
+        .filter((x) => x.account_key === p.account_key && x.scheduled_at && QUEUE_SET.has(x.status))
+        .sort((a, b) => String(a.scheduled_at).localeCompare(String(b.scheduled_at)));
+      const idx = lane.findIndex((x) => x.id === postId);
+      const swapIdx = direction === "up" ? idx - 1 : idx + 1;
+      if (idx < 0 || swapIdx < 0 || swapIdx >= lane.length) {
+        if (window.GSPUI) window.GSPUI.toast("Cannot move further in this account lane", "info");
+        return;
+      }
+      const other = lane[swapIdx];
+      await fetch(`/api/auto-post/posts/${p.id}/reschedule`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scheduled_at: other.scheduled_at }),
+      });
+      await fetch(`/api/auto-post/posts/${other.id}/reschedule`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scheduled_at: p.scheduled_at }),
+      });
+      if (window.GSPUI) window.GSPUI.toast("Queue order updated", "success");
+      await fetchWorkspace();
+    };
+    root.querySelectorAll(".pub-act-reorder-up").forEach((b) => b.addEventListener("click", () => handleReorder(Number(b.dataset.id), "up")));
+    root.querySelectorAll(".pub-act-reorder-down").forEach((b) => b.addEventListener("click", () => handleReorder(Number(b.dataset.id), "down")));
   }
 
   function initPublishingWorkspace() {
@@ -3661,6 +4117,24 @@ async function checkAccountHealth(platform = null) {
     bindFilter("pub-date-from", "dateFrom");
     bindFilter("pub-date-to", "dateTo");
 
+    document.getElementById("pub-account-filter")?.addEventListener("change", (e) => {
+      PUB_STATE.selectedChannel = e.target.value || "all";
+      fetchWorkspace();
+    });
+
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".pub-more-wrap")) {
+        document.querySelectorAll(".pub-more-menu").forEach((m) => m.classList.add("hidden"));
+        document.querySelectorAll(".pub-more-btn").forEach((btn) => btn.setAttribute("aria-expanded", "false"));
+      }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        document.querySelectorAll(".pub-more-menu").forEach((m) => m.classList.add("hidden"));
+        document.querySelectorAll(".pub-more-btn").forEach((btn) => btn.setAttribute("aria-expanded", "false"));
+      }
+    });
+
     document.getElementById("pub-clear-filters-btn")?.addEventListener("click", () => {
       PUB_STATE.filters = { search: "", platform: "", status: "", category: "", dateFrom: "", dateTo: "" };
       ["pub-search-input", "scheduler-platform-filter", "scheduler-status-filter", "pub-category-filter", "pub-date-from", "pub-date-to"].forEach((id) => {
@@ -3709,6 +4183,27 @@ async function checkAccountHealth(platform = null) {
     });
 
     document.getElementById("refresh-scheduled-posts-btn")?.addEventListener("click", fetchWorkspace);
+    window.insertScheduledPostsIntoWorkspace = function (newPosts) {
+      if (!Array.isArray(newPosts) || !newPosts.length) return;
+      const byId = new Map((state.posts || []).map((p) => [p.id, p]));
+      let addedCount = 0;
+      for (const p of newPosts) {
+        if (!p || !p.id) continue;
+        if (!byId.has(p.id)) addedCount += 1;
+        byId.set(p.id, p);
+      }
+      state.posts = Array.from(byId.values());
+      if (state.counts && addedCount > 0) {
+        state.counts.all = (state.counts.all || 0) + addedCount;
+        for (const p of newPosts) {
+          const st = (p.status || "scheduled").toLowerCase();
+          if (st === "scheduled" || st === "queued") state.counts.scheduled = (state.counts.scheduled || 0) + 1;
+          else if (st === "draft") state.counts.drafts = (state.counts.drafts || 0) + 1;
+          else if (st === "pending_approval") state.counts.approvals = (state.counts.approvals || 0) + 1;
+        }
+      }
+      renderAll();
+    };
     window.loadScheduledPosts = fetchWorkspace;
     fetchWorkspace();
   }

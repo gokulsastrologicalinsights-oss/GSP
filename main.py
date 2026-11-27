@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 import database
 import scheduler_service
+import sync_service
 from facebook_service import FacebookService
 from instagram_service import InstagramService
 from youtube_service import YouTubeService
@@ -55,6 +56,16 @@ async def _auto_post_scheduler_loop():
             logger.error(f"Auto Post Scheduler loop error: {e}")
 
 
+async def _comment_sync_worker_loop():
+    """Single background worker checking due 30-minute account comment syncs."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            sync_service.run_due_syncs()
+        except Exception as e:
+            logger.error(f"Comment sync worker error: {e}")
+
+
 _startup_recovery_lock = asyncio.Lock()
 
 
@@ -62,6 +73,7 @@ def run_startup_recovery():
     """Run startup recovery safely after DB initialization, before scheduler loop starts."""
     try:
         result = scheduler_service.recover_interrupted_jobs()
+        sync_service.run_startup_sync_recovery()
         logger.info(
             "Startup recovery completed: recovered=%s exhausted=%s checked_at=%s",
             result.get("recovered", 0),
@@ -82,12 +94,14 @@ async def lifespan(app: FastAPI):
     task_ig = asyncio.create_task(_instagram_background_sync_loop())
     task_yt = asyncio.create_task(_youtube_background_sync_loop())
     task_autopost = asyncio.create_task(_auto_post_scheduler_loop())
+    task_sync = asyncio.create_task(_comment_sync_worker_loop())
     try:
         yield
     finally:
         task_ig.cancel()
         task_yt.cancel()
         task_autopost.cancel()
+        task_sync.cancel()
 
 
 app = FastAPI(title="Gokul Social Publisher", version="1.0.0", lifespan=lifespan)
@@ -1324,11 +1338,14 @@ async def upload_auto_post_batch(
 
         detected = scheduler_service.detect_zodiac_from_filename(safe_name)
         z_idx = detected["index"] if detected else None
-        gen = (
-            scheduler_service.generate_caption_and_hashtags(z_idx, category)
-            if z_idx
-            else {"caption": "", "hashtags": ""}
-        )
+        if z_idx:
+            gen = scheduler_service.generate_caption_and_hashtags(z_idx, category)
+            needs_review = False
+            review_reason = None
+        else:
+            gen = {"caption": "", "hashtags": "", "platform_descriptions": {}}
+            needs_review = True
+            review_reason = "Could not detect Rasi from filename; manual caption required."
         items.append(
             {
                 "original_filename": safe_name,
@@ -1340,6 +1357,9 @@ async def upload_auto_post_batch(
                 "zodiac_english": detected["english"] if detected else None,
                 "caption": gen["caption"],
                 "hashtags": gen["hashtags"],
+                "platform_descriptions": gen.get("platform_descriptions", {}),
+                "needs_review": needs_review,
+                "review_reason": review_reason,
             }
         )
 
@@ -1840,6 +1860,37 @@ def sync_inbox_comments_endpoint(platform: Optional[str] = None):
 
 # Serve frontend
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+@app.get("/api/sync/accounts")
+def get_sync_accounts():
+    return {"accounts": sync_service.ensure_account_sync_states()}
+
+
+@app.post("/api/sync/accounts/{platform}/{account_id}/settings")
+def update_sync_account_settings(platform: str, account_id: str, payload: dict):
+    try:
+        updated = sync_service.update_account_sync_settings(
+            platform=platform,
+            account_id=account_id,
+            auto_sync_enabled=payload.get("auto_sync_enabled"),
+            reply_mode=payload.get("reply_mode"),
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Account sync state not found")
+        return {"account": updated}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/sync/accounts/{platform}/{account_id}/now")
+def trigger_manual_account_sync(platform: str, account_id: str):
+    return sync_service.sync_account(platform, account_id, sync_type="manual")
+
+
+@app.get("/api/sync/history")
+def get_sync_history_endpoint(limit: int = 50):
+    return {"history": sync_service.get_sync_history(limit=limit)}
+
 
 @app.get("/")
 def serve_home():

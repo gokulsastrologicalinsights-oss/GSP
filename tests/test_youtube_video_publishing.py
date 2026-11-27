@@ -99,7 +99,7 @@ def test_yt_resumable_upload_default_private_and_metadata(isolated_yt_db, monkey
     assert res["status"] == "published"
     assert res["external_post_id"] == "yt_vid_777"
     assert res["permalink"] == "https://www.youtube.com/watch?v=yt_vid_777"
-    assert captured["metadata"]["status"]["privacyStatus"] == "private"
+    assert captured["metadata"]["status"]["privacyStatus"] == "public"
     assert "Aries" in captured["metadata"]["snippet"]["tags"]
     assert "Aries Weekly" in captured["metadata"]["snippet"]["description"]
     assert os.path.exists(video_path)

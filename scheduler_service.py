@@ -581,9 +581,9 @@ class YouTubeChannelAdapter(PlatformAdapter):
         description = f"{caption}\n\n{hashtags}".strip() if hashtags else caption
         title = (post.get("title") or f"{post.get('zodiac_tamil', '')} ({post.get('zodiac_english', '')}) - {post.get('category', 'Astrology')}".strip(" -"))[:100]
         tags = [t.lstrip("#").strip() for t in hashtags.split() if t.strip()]
-        privacy_status = post.get("privacy_status") or "private"
+        privacy_status = post.get("privacy_status") or "public"
         if privacy_status not in ("private", "unlisted", "public"):
-            privacy_status = "private"
+            privacy_status = "public"
 
         metadata = {
             "snippet": {
@@ -799,8 +799,56 @@ def detect_zodiac_from_filename(filename: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def generate_caption_and_hashtags(zodiac_index: int, category: str) -> Dict[str, str]:
-    """Generate deterministic promotional Tamil caption and hashtags without AI."""
+CONSULTATION_CONTACT_BLOCK = (
+    "ஜோதிட ஆலோசனை மற்றும் ஆன்லைன் கன்சல்டேஷனுக்கு:\n"
+    "📞 WhatsApp: +91 94445 59071"
+)
+ASTROLOGY_BRAND_NAME = "Gokul's Astrological Insights"
+ASTROLOGY_BRAND_HASHTAG = "#GokulsAstrologicalInsights"
+
+
+PLATFORM_HASHTAG_LIMITS: Dict[str, int] = {
+    "facebook": 5,
+    "instagram": 15,
+    "youtube": 15,
+}
+
+
+def _limit_hashtags(hashtags: str, max_count: int) -> str:
+    tags = [t for t in (hashtags or "").split() if t.startswith("#")]
+    return " ".join(tags[:max_count])
+
+
+def build_platform_descriptions(caption: str, hashtags: str) -> Dict[str, str]:
+    """Build platform-ready descriptions for YouTube, Facebook, and Instagram."""
+    clean_caption = (caption or "").strip()
+    clean_hashtags = (hashtags or "").strip()
+
+    yt_tags = _limit_hashtags(clean_hashtags, PLATFORM_HASHTAG_LIMITS["youtube"])
+    fb_tags = _limit_hashtags(clean_hashtags, PLATFORM_HASHTAG_LIMITS["facebook"])
+    ig_tags = _limit_hashtags(clean_hashtags, PLATFORM_HASHTAG_LIMITS["instagram"])
+
+    yt_text = f"{clean_caption}\n\n{yt_tags}".strip() if yt_tags else clean_caption
+    fb_text = f"{clean_caption}\n\n{fb_tags}".strip() if fb_tags else clean_caption
+    ig_text = f"{clean_caption}\n\n{ig_tags}".strip() if ig_tags else clean_caption
+
+    # Instagram caption limit is 2200 characters
+    if len(ig_text) > 2200:
+        if ig_tags and len(ig_tags) < 2000:
+            max_cap = 2200 - len(ig_tags) - 5
+            ig_text = f"{clean_caption[:max_cap].rstrip()}...\n\n{ig_tags}"
+        else:
+            ig_text = ig_text[:2197].rstrip() + "..."
+
+    return {
+        "youtube": yt_text,
+        "facebook": fb_text,
+        "instagram": ig_text,
+    }
+
+
+def generate_caption_and_hashtags(zodiac_index: int, category: str) -> Dict[str, Any]:
+    """Generate detailed Tamil caption, contact info, and Rasi-specific hashtags."""
     sign = ZODIAC_BY_INDEX.get(zodiac_index)
     if not sign:
         raise ValueError(f"Invalid zodiac_index: {zodiac_index}")
@@ -810,19 +858,67 @@ def generate_caption_and_hashtags(zodiac_index: int, category: str) -> Dict[str,
     eng_tag = english.replace(" ", "")
 
     if category == "Weekly Rasi Palan":
-        caption = f"{tamil} ({english}) - இந்த வார ராசி பலன்! முழுமையான விவரங்களுக்கு வீடியோவைப் பாருங்கள்."
-        hashtags = f"#{tamil} #வாரராசிபலன் #RasiPalan #WeeklyRasiPalan #{eng_tag} #TamilAstrology"
+        hook = f"✨ {tamil} ({english}) ராசி அன்பர்களே! இந்த வார ராசி பலன்! 🙏"
+        intro = (
+            f"{tamil} ({english}) ராசிக்காரர்களுக்கான இந்த வார ராசி பலன் பற்றிய "
+            "முக்கிய தகவல்கள், கவனிக்க வேண்டிய விஷயங்கள் மற்றும் பொதுவான வழிகாட்டுதல்கள் "
+            "இந்த வீடியோவில் பகிரப்பட்டுள்ளன."
+        )
+        cat_tags = ["#வாரராசிபலன்", "#WeeklyRasiPalan"]
     elif category == "Monthly Rasi Palan":
-        caption = f"{tamil} ({english}) - இந்த மாத ராசி பலன்! முக்கிய தகவல்களுக்கு வீடியோவைப் பாருங்கள்."
-        hashtags = f"#{tamil} #மாதராசிபலன் #MonthlyRasiPalan #RasiPalan #{eng_tag} #TamilAstrology"
+        hook = f"✨ {tamil} ({english}) ராசி அன்பர்களே! இந்த மாத ராசி பலன்! 🙏"
+        intro = (
+            f"{tamil} ({english}) ராசிக்காரர்களுக்கான இந்த மாத ராசி பலன் பற்றிய "
+            "முக்கிய தகவல்கள், கவனிக்க வேண்டிய விஷயங்கள் மற்றும் பொதுவான வழிகாட்டுதல்கள் "
+            "இந்த வீடியோவில் பகிரப்பட்டுள்ளன."
+        )
+        cat_tags = ["#மாதராசிபலன்", "#MonthlyRasiPalan"]
     elif category == "Zodiac Characteristics":
-        caption = f"{tamil} ({english}) ராசியின் சிறப்பம்சங்கள் மற்றும் குணநலன்கள்! முழு வீடியோவைப் பாருங்கள்."
-        hashtags = f"#{tamil} #ராசிகுணங்கள் #ZodiacCharacteristics #{eng_tag} #TamilAstrology"
+        hook = f"✨ {tamil} ({english}) ராசியின் சிறப்பம்சங்கள் மற்றும் குணநலன்கள்! 🙏"
+        intro = (
+            f"{tamil} ({english}) ராசிக்காரர்களின் இயல்பான குணநலன்கள், பலம் மற்றும் "
+            "முக்கிய சிறப்பம்சங்கள் பற்றிய முழுமையான தகவல்கள் இந்த வீடியோவில் பகிரப்பட்டுள்ளன."
+        )
+        cat_tags = ["#ராசிகுணங்கள்", "#ZodiacCharacteristics"]
     else:
-        caption = f"{tamil} ({english}) - ஜோதிட சிறப்பு பதிவு! மேலும் அறிய வீடியோவைப் பாருங்கள்."
-        hashtags = f"#{tamil} #ஜோதிடம் #TamilAstrology #{eng_tag} #Astrology"
+        hook = f"✨ {tamil} ({english}) ராசி அன்பர்களே! ஜோதிட சிறப்பு பதிவு! 🙏"
+        intro = (
+            f"{tamil} ({english}) ராசிக்காரர்களுக்கான பயனுள்ள ஜோதிடத் தகவல்கள் மற்றும் "
+            "வழிகாட்டுதல்கள் இந்த வீடியோவில் பகிரப்பட்டுள்ளன."
+        )
+        cat_tags = ["#ஜோதிடம்", "#AstrologyInsights"]
 
-    return {"caption": caption, "hashtags": hashtags}
+    cta = "முழுமையான தகவல்களுக்கும் தெளிவான வழிகாட்டுதல்களுக்கும் வீடியோவை முழுமையாகப் பாருங்கள்! 🎥✨"
+    brand_line = f"🌟 {ASTROLOGY_BRAND_NAME}"
+
+    caption = "\n\n".join([hook, intro, cta, brand_line, CONSULTATION_CONTACT_BLOCK])
+
+    tag_list = [
+        f"#{tamil}",
+        f"#{tamil}ராசி",
+        f"#{tamil}ராசிபலன்",
+        f"#{eng_tag}",
+        f"#{eng_tag}Horoscope",
+        *cat_tags,
+        "#RasiPalan",
+        "#TamilAstrology",
+        "#VedicAstrology",
+        ASTROLOGY_BRAND_HASHTAG,
+    ]
+    # Deduplicate while preserving order and cap at 15 hashtags
+    seen = set()
+    unique_tags = []
+    for t in tag_list:
+        if t not in seen:
+            seen.add(t)
+            unique_tags.append(t)
+    hashtags = " ".join(unique_tags[:15])
+
+    return {
+        "caption": caption,
+        "hashtags": hashtags,
+        "platform_descriptions": build_platform_descriptions(caption, hashtags),
+    }
 
 
 def validate_platform_media(
