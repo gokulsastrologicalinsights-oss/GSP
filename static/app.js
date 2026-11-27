@@ -4216,3 +4216,63 @@ async function checkAccountHealth(platform = null) {
     initPublishingWorkspace();
   }
 })();
+
+
+// Emergency Stop (global_kill_switch) UI Control
+(function initEmergencyStopUI() {
+  const btn = document.getElementById("emergency-stop-btn");
+  const label = document.getElementById("emergency-stop-label");
+  if (!btn || !label) return;
+
+  let isKillSwitchOn = true;
+  const renderEmergencyState = (on) => {
+    isKillSwitchOn = !!on;
+    label.textContent = isKillSwitchOn ? "ON" : "OFF";
+    btn.title = isKillSwitchOn
+      ? "Emergency Stop is ON: all outbound publishing and comment replies are blocked."
+      : "Emergency Stop is OFF: normal operations are permitted subject to account authorization, manual approvals, and safety limits.";
+    btn.style.borderColor = isKillSwitchOn ? "rgba(239, 68, 68, 0.5)" : "";
+  };
+
+  fetch("/api/status")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((data) => {
+      if (data && typeof data.global_kill_switch !== "undefined") {
+        renderEmergencyState(data.global_kill_switch === true || data.global_kill_switch === "true");
+      }
+    })
+    .catch(() => {});
+
+  btn.addEventListener("click", async () => {
+    const nextState = !isKillSwitchOn;
+    const msg = nextState
+      ? "Enable Emergency Stop? All outbound publishing and comment replies will be blocked immediately."
+      : "Disable Emergency Stop? Normal operations will be permitted subject to account authorization, manual approvals, and existing safety limits.";
+    const ok = window.GSPUI
+      ? await window.GSPUI.confirm({
+          title: nextState ? "Enable Emergency Stop" : "Disable Emergency Stop",
+          message: msg,
+          confirmText: nextState ? "Enable Emergency Stop" : "Disable Emergency Stop",
+          variant: nextState ? "danger" : "primary",
+        })
+      : window.confirm(msg);
+    if (!ok) return;
+
+    const res = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "global_kill_switch", value: nextState ? "true" : "false" }),
+    });
+    if (res.ok) {
+      renderEmergencyState(nextState);
+      if (window.GSPUI) {
+        window.GSPUI.toast(
+          nextState
+            ? "Emergency Stop ON: all outbound publishing and replies blocked."
+            : "Emergency Stop OFF: normal authorized operations permitted.",
+          nextState ? "info" : "success"
+        );
+      }
+    }
+  });
+})();

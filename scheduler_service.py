@@ -2000,8 +2000,49 @@ def publish_post_now(post_id: int) -> Tuple[Optional[Dict[str, Any]], Optional[s
         conn.close()
         return updated, None
 
+    if str(database.get_settings().get("global_kill_switch", "false")).lower() == "true":
+        conn.close()
+        return None, "Emergency Stop (global_kill_switch) is active."
+
+    adapter = get_platform_adapter(post["platform"])
+    res = adapter.publish(dict(post), safe_mode=False)
+    if res.get("success"):
+        cursor.execute(
+            """
+            UPDATE scheduled_posts
+            SET status = 'published',
+                published_at = ?,
+                external_post_id = ?,
+                permalink = ?,
+                error_message = NULL,
+                error_category = NULL,
+                next_retry_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (now_iso, res.get("external_post_id"), res.get("permalink"), post_id),
+        )
+        conn.commit()
+        cursor.execute("SELECT * FROM scheduled_posts WHERE id = ?", (post_id,))
+        row = cursor.fetchone()
+        updated = dict(row) if row else dict(post)
+        conn.close()
+        return updated, None
+
+    err_msg = res.get("error") or "Publish failed"
+    cursor.execute(
+        """
+        UPDATE scheduled_posts
+        SET status = 'failed',
+            error_message = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (err_msg, post_id),
+    )
+    conn.commit()
     conn.close()
-    return None, "Live publishing is disabled in this environment."
+    return None, err_msg
 
 
 def create_publishing_post(data: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:

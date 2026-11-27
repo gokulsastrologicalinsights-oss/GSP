@@ -195,6 +195,7 @@ def get_status():
         "ig_auto_reply_enabled": settings.get("ig_auto_reply_enabled", "false") == "true",
         "yt_auto_reply_enabled": settings.get("yt_auto_reply_enabled", "false") == "true",
         "safe_test_mode": settings.get("safe_test_mode") == "true",
+        "global_kill_switch": settings.get("global_kill_switch", "false") == "true",
         "ui_theme": settings.get("ui_theme", "dark"),
         "stats": {
             "connected_accounts": accounts_count,
