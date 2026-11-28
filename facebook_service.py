@@ -155,11 +155,15 @@ class FacebookService:
         posts_url = f"{GRAPH_API_BASE}/{page_id}/posts"
         params = {
             "access_token": access_token,
-            "limit": 5,
+            "limit": 20,
             "fields": "id,message,created_time"
         }
         posts_res = requests.get(posts_url, params=params, timeout=10)
         posts_data = posts_res.json()
+        if "error" in posts_data:
+            err = posts_data["error"]
+            msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+            raise RuntimeError(f"Facebook posts fetch failed: {msg}")
         posts = posts_data.get("data", [])
 
         all_comments = []
@@ -185,6 +189,10 @@ class FacebookService:
             }
             c_res = requests.get(comments_url, params=c_params, timeout=10)
             c_data = c_res.json()
+            if "error" in c_data:
+                err = c_data["error"]
+                msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                raise RuntimeError(f"Facebook comments fetch failed: {msg}")
             comments = c_data.get("data", [])
             for c in comments:
                 c["post_id"] = post_id
@@ -254,6 +262,12 @@ class FacebookService:
             elif not is_auto_reply_enabled:
                 final_status = "review_required"  # Held for review when master switch is off
                 reason = "platform_auto_reply_off"
+            elif (acct_mode := database.get_account_reply_mode("facebook", page_id)) == "DISABLED":
+                final_status = "skipped"
+                reason = "account_reply_disabled"
+            elif acct_mode == "MANUAL_APPROVAL":
+                final_status = "review_required"
+                reason = "account_manual_approval"
             elif intent in ("positive_praise", "praise") and not platform_cfg["praise_enabled"]:
                 final_status = "review_required"
                 reason = "platform_praise_disabled"

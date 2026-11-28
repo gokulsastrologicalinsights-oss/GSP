@@ -178,7 +178,7 @@ class InstagramService:
         media_url = f"{GRAPH_API_BASE}/{ig_user_id}/media"
         params = {
             "access_token": access_token,
-            "limit": 5,
+            "limit": 20,
             "fields": "id,caption,media_type,timestamp",
         }
         media_res = requests.get(media_url, params=params, timeout=10)
@@ -290,6 +290,12 @@ class InstagramService:
             elif not is_auto_reply_enabled:
                 final_status = "review_required"
                 reason = "platform_auto_reply_off"
+            elif (acct_mode := database.get_account_reply_mode("instagram", ig_user_id)) == "DISABLED":
+                final_status = "skipped"
+                reason = "account_reply_disabled"
+            elif acct_mode == "MANUAL_APPROVAL":
+                final_status = "review_required"
+                reason = "account_manual_approval"
             elif intent in ("positive_praise", "praise") and not platform_cfg["praise_enabled"]:
                 final_status = "review_required"
                 reason = "platform_praise_disabled"

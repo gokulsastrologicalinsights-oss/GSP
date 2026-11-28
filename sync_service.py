@@ -355,8 +355,21 @@ def sync_account(platform: str, account_id: str, sync_type: str = "scheduled") -
             release_account_sync(platform, account_id, sync_type=sync_type, success=False, error=res.get("error"))
             return {"success": False, "error": res.get("error")}
 
-        comments_fetched = int(res.get("fetched", res.get("synced", 0)) or 0)
-        comments_new = int(res.get("new", res.get("synced", 0)) or 0)
+        details = res.get("details") or []
+        comments_fetched = int(res.get("fetched", res.get("processed_count", res.get("synced", len(details)))) or 0)
+        comments_new = int(
+            res.get(
+                "new",
+                sum(1 for d in details if d.get("reason") != "already_processed") if details else res.get("synced", 0),
+            )
+            or 0
+        )
+        auto_replies_sent = int(
+            res.get("auto_replies_sent", sum(1 for d in details if d.get("status") == "replied")) or 0
+        )
+        manual_review_flagged = int(
+            res.get("manual_review_flagged", sum(1 for d in details if d.get("status") == "review_required")) or 0
+        )
         cursor = res.get("cursor")
         release_account_sync(
             platform,
@@ -366,8 +379,18 @@ def sync_account(platform: str, account_id: str, sync_type: str = "scheduled") -
             cursor=cursor,
             comments_fetched=comments_fetched,
             comments_new=comments_new,
+            auto_replies_sent=auto_replies_sent,
+            manual_review_flagged=manual_review_flagged,
         )
-        return {"success": True, "platform": platform, "account_id": account_id, "new": comments_new}
+        return {
+            "success": True,
+            "platform": platform,
+            "account_id": account_id,
+            "fetched": comments_fetched,
+            "new": comments_new,
+            "auto_replies_sent": auto_replies_sent,
+            "manual_review_flagged": manual_review_flagged,
+        }
     except Exception as e:
         logger.exception("Sync failed for %s/%s: %s", platform, account_id, e)
         release_account_sync(platform, account_id, sync_type=sync_type, success=False, error=str(e))

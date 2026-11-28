@@ -3444,3 +3444,18 @@ def send_inbox_reply(
             }
         finally:
             conn.close()
+
+
+def get_account_reply_mode(platform: str, account_id: str) -> Optional[str]:
+    """Return the account's configured reply_mode ('AUTOMATIC_REPLY', 'MANUAL_APPROVAL', 'DISABLED') or None if unset."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT reply_mode FROM account_sync_state WHERE platform = ? AND account_id = ?",
+            (platform, account_id),
+        ).fetchone()
+        return row["reply_mode"] if row else None
+    except Exception:
+        return None
+    finally:
+        conn.close()

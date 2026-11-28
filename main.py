@@ -23,6 +23,12 @@ from youtube_service import YouTubeService
 logger = logging.getLogger(__name__)
 
 
+def _run_fb_sync_if_enabled():
+    settings = database.get_settings()
+    if settings.get("auto_reply_enabled") == "true":
+        FacebookService.sync_facebook_comments()
+
+
 def _run_ig_sync_if_enabled():
     settings = database.get_settings()
     if settings.get("ig_auto_reply_enabled") == "true":
@@ -33,6 +39,16 @@ def _run_yt_sync_if_enabled():
     settings = database.get_settings()
     if settings.get("yt_auto_reply_enabled") == "true":
         YouTubeService.sync_youtube_comments()
+
+
+async def _facebook_background_sync_loop():
+    """Periodically syncs Facebook comments when Facebook Auto Reply is enabled."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            await asyncio.to_thread(_run_fb_sync_if_enabled)
+        except Exception as e:
+            logger.error(f"Background Facebook sync error: {e}")
 
 
 async def _instagram_background_sync_loop():
@@ -100,6 +116,7 @@ async def lifespan(app: FastAPI):
     database.init_db()
     async with _startup_recovery_lock:
         run_startup_recovery()
+    task_fb = asyncio.create_task(_facebook_background_sync_loop())
     task_ig = asyncio.create_task(_instagram_background_sync_loop())
     task_yt = asyncio.create_task(_youtube_background_sync_loop())
     task_autopost = asyncio.create_task(_auto_post_scheduler_loop())
@@ -107,6 +124,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        task_fb.cancel()
         task_ig.cancel()
         task_yt.cancel()
         task_autopost.cancel()
