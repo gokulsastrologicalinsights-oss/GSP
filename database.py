@@ -3172,13 +3172,6 @@ def send_inbox_reply(
             if c.fetchone()["cnt"] >= MAX_REPLIES_PER_DAY:
                 conn.rollback()
                 return {"success": False, "reason": "rate_limit_daily_100", "error": "Daily reply rate limit reached (100/day)."}
-            c.execute(
-                "SELECT COUNT(*) AS cnt FROM reply_rate_log WHERE commenter_key = ? AND replied_at >= ?",
-                (commenter_key, now - COMMENTER_COOLDOWN_SECONDS),
-            )
-            if c.fetchone()["cnt"] >= 1:
-                conn.rollback()
-                return {"success": False, "reason": "rate_limit_commenter_24h", "error": "24h cooldown active for this commenter."}
             c.execute("SELECT MAX(replied_at) AS last_ts FROM reply_rate_log")
             last_row = c.fetchone()
             if last_row and last_row["last_ts"] is not None and (now - last_row["last_ts"]) < MIN_REPLY_INTERVAL_SECONDS:
