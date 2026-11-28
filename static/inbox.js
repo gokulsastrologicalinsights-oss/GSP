@@ -321,6 +321,8 @@
     let statusBadge = '<span class="ci-badge status-pending">Unanswered</span>';
     if (c.status === 'replied') {
       statusBadge = '<span class="ci-badge status-replied">✓ Replied</span>';
+    } else if (c.status === 'queued') {
+      statusBadge = '<span class="ci-badge status-test">⏳ Queued (Auto-Sending)</span>';
     } else if (isAnswered && c.status === 'test_prepared') {
       statusBadge = '<span class="ci-badge status-test">🛡️ Safe Test Sent</span>';
     } else if (isReconcile) {
@@ -517,9 +519,11 @@
 
       delete CI_STATE.activeComposers[commentId];
       ciShowFeedback(
-        data.safe_test_mode
-          ? 'Reply recorded in Safe Testing Mode (no live API call made).'
-          : 'Reply published successfully!',
+        data.queued
+          ? 'Reply approved & queued! It will post automatically in the background (120s anti-spam gap).'
+          : data.safe_test_mode
+            ? 'Reply recorded in Safe Testing Mode (no live API call made).'
+            : 'Reply published successfully!',
         'success'
       );
       await loadInboxPostComments(false);

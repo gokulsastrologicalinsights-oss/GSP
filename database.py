@@ -3058,6 +3058,7 @@ def send_inbox_reply(
     reply_text: str,
     selected_level: str = "custom",
     now_ts: Optional[float] = None,
+    from_queue: bool = False,
 ) -> Dict[str, Any]:
     """Explicitly send (or Safe-Test-record) a reply to a specific comment with full safety checks.
 
@@ -3181,8 +3182,79 @@ def send_inbox_reply(
             c.execute("SELECT MAX(replied_at) AS last_ts FROM reply_rate_log")
             last_row = c.fetchone()
             if last_row and last_row["last_ts"] is not None and (now - last_row["last_ts"]) < MIN_REPLY_INTERVAL_SECONDS:
-                conn.rollback()
-                return {"success": False, "reason": "rate_limit_interval_120s", "error": "Minimum 120s interval between replies."}
+                if from_queue:
+                    conn.rollback()
+                    return {"success": False, "queued_waiting": True, "reason": "rate_limit_interval_120s", "error": "Waiting for 120s interval."}
+                c.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS queued_manual_replies (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        platform TEXT NOT NULL,
+                        comment_id TEXT NOT NULL UNIQUE,
+                        reply_text TEXT NOT NULL,
+                        selected_level TEXT DEFAULT 'custom',
+                        status TEXT NOT NULL DEFAULT 'queued',
+                        error_message TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        dispatched_at TIMESTAMP
+                    )
+                    """
+                )
+                c.execute(
+                    """
+                    INSERT INTO queued_manual_replies (platform, comment_id, reply_text, selected_level, status, error_message)
+                    VALUES (?, ?, ?, ?, 'queued', NULL)
+                    ON CONFLICT(comment_id) DO UPDATE SET
+                        platform = excluded.platform,
+                        reply_text = excluded.reply_text,
+                        selected_level = excluded.selected_level,
+                        status = 'queued',
+                        error_message = NULL,
+                        created_at = CURRENT_TIMESTAMP
+                    """,
+                    (plat, cid, text, selected_level),
+                )
+                c.execute(
+                    "UPDATE activities SET reply_text = ?, status = 'queued', reason = 'queued_120s_interval' WHERE id = ?",
+                    (text, act["id"]),
+                )
+                c.execute(
+                    """
+                    INSERT INTO approval_queue (
+                        platform, account_id, comment_id, commenter_name, comment_text,
+                        detected_language, detected_intent, suggested_reply, edited_reply, status, approved_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', CURRENT_TIMESTAMP)
+                    ON CONFLICT(comment_id) DO UPDATE SET
+                        edited_reply = excluded.edited_reply,
+                        status = 'approved',
+                        approved_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        plat,
+                        resolved_account_id,
+                        cid,
+                        act.get("author_name"),
+                        act.get("comment_text") or "",
+                        act.get("detected_language"),
+                        act.get("detected_intent"),
+                        text,
+                        text,
+                    ),
+                )
+                conn.commit()
+                return {
+                    "success": True,
+                    "queued": True,
+                    "safe_test_mode": False,
+                    "dispatched": False,
+                    "status": "queued",
+                    "platform": plat,
+                    "comment_id": cid,
+                    "reply_text": text,
+                    "selected_level": selected_level,
+                    "message": "Queued for automatic background delivery (120s anti-spam interval).",
+                }
 
             # Ensure approval_queue row exists for audit/publishing_attempts linkage
             c.execute(
@@ -3459,3 +3531,60 @@ def get_account_reply_mode(platform: str, account_id: str) -> Optional[str]:
         return None
     finally:
         conn.close()
+
+
+def process_queued_manual_replies() -> Dict[str, Any]:
+    """Dispatch the oldest queued manual reply if the 120s interval has elapsed."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS queued_manual_replies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT NOT NULL,
+                comment_id TEXT NOT NULL UNIQUE,
+                reply_text TEXT NOT NULL,
+                selected_level TEXT DEFAULT 'custom',
+                status TEXT NOT NULL DEFAULT 'queued',
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                dispatched_at TIMESTAMP
+            )
+            """
+        )
+        row = conn.execute(
+            "SELECT * FROM queued_manual_replies WHERE status = 'queued' ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return {"processed": 0}
+
+    item = dict(row)
+    res = send_inbox_reply(
+        platform=item["platform"],
+        comment_id=item["comment_id"],
+        reply_text=item["reply_text"],
+        selected_level=item.get("selected_level") or "custom",
+        from_queue=True,
+    )
+    if res.get("queued_waiting"):
+        return {"processed": 0, "waiting": True}
+
+    conn = get_connection()
+    try:
+        if res.get("success") or res.get("duplicate_blocked"):
+            conn.execute(
+                "UPDATE queued_manual_replies SET status = 'sent', dispatched_at = CURRENT_TIMESTAMP, error_message = NULL WHERE id = ?",
+                (item["id"],),
+            )
+        else:
+            conn.execute(
+                "UPDATE queued_manual_replies SET status = 'failed', error_message = ? WHERE id = ?",
+                ((res.get("error") or res.get("reason") or "Unknown error")[:500], item["id"]),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"processed": 1, "result": res}

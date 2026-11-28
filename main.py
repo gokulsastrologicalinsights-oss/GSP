@@ -91,6 +91,16 @@ async def _comment_sync_worker_loop():
             logger.error(f"Comment sync worker error: {e}")
 
 
+async def _queued_reply_worker_loop():
+    """Periodically dispatches queued manual replies respecting the 120s anti-spam interval."""
+    while True:
+        await asyncio.sleep(15)
+        try:
+            await asyncio.to_thread(database.process_queued_manual_replies)
+        except Exception as e:
+            logger.error(f"Queued reply worker error: {e}")
+
+
 _startup_recovery_lock = asyncio.Lock()
 
 
@@ -121,6 +131,7 @@ async def lifespan(app: FastAPI):
     task_yt = asyncio.create_task(_youtube_background_sync_loop())
     task_autopost = asyncio.create_task(_auto_post_scheduler_loop())
     task_sync = asyncio.create_task(_comment_sync_worker_loop())
+    task_qreply = asyncio.create_task(_queued_reply_worker_loop())
     try:
         yield
     finally:
@@ -129,6 +140,7 @@ async def lifespan(app: FastAPI):
         task_yt.cancel()
         task_autopost.cancel()
         task_sync.cancel()
+        task_qreply.cancel()
 
 
 app = FastAPI(title="Gokul Social Publisher", version="1.0.0", lifespan=lifespan)
