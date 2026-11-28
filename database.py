@@ -3219,29 +3219,35 @@ def send_inbox_reply(
                     (text, act["id"]),
                 )
                 c.execute(
-                    """
-                    INSERT INTO approval_queue (
-                        platform, account_id, comment_id, commenter_name, comment_text,
-                        detected_language, detected_intent, suggested_reply, edited_reply, status, approved_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', CURRENT_TIMESTAMP)
-                    ON CONFLICT(comment_id) DO UPDATE SET
-                        edited_reply = excluded.edited_reply,
-                        status = 'approved',
-                        approved_at = CURRENT_TIMESTAMP,
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
-                    (
-                        plat,
-                        resolved_account_id,
-                        cid,
-                        act.get("author_name"),
-                        act.get("comment_text") or "",
-                        act.get("detected_language"),
-                        act.get("detected_intent"),
-                        text,
-                        text,
-                    ),
+                    "SELECT id FROM approval_queue WHERE LOWER(platform) = ? AND comment_id = ?",
+                    (plat, cid),
                 )
+                existing_aq = c.fetchone()
+                if existing_aq:
+                    c.execute(
+                        "UPDATE approval_queue SET edited_reply = ?, status = 'approved', approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (text, existing_aq["id"]),
+                    )
+                else:
+                    c.execute(
+                        """
+                        INSERT INTO approval_queue (
+                            platform, account_id, comment_id, commenter_name, comment_text,
+                            detected_language, detected_intent, suggested_reply, edited_reply, status, approved_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', CURRENT_TIMESTAMP)
+                        """,
+                        (
+                            plat,
+                            resolved_account_id,
+                            cid,
+                            act.get("author_name"),
+                            act.get("comment_text") or "",
+                            act.get("detected_language"),
+                            act.get("detected_intent"),
+                            text,
+                            text,
+                        ),
+                    )
                 conn.commit()
                 return {
                     "success": True,
