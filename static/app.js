@@ -1662,10 +1662,12 @@ function switchAutoReplySubtab(subtab) {
   const autoView = document.getElementById('subview-automatic');
   const approvalView = document.getElementById('subview-approval');
   const platformSettingsView = document.getElementById('subview-platform-settings');
+  const analyticsView = document.getElementById('subview-analytics');
   if (inboxView) inboxView.classList.toggle('hidden', subtab !== 'inbox');
   if (autoView) autoView.classList.toggle('hidden', subtab !== 'automatic');
   if (approvalView) approvalView.classList.toggle('hidden', subtab !== 'approval');
   if (platformSettingsView) platformSettingsView.classList.toggle('hidden', subtab !== 'platform-settings');
+  if (analyticsView) analyticsView.classList.toggle('hidden', subtab !== 'analytics');
 
   if (subtab === 'inbox' && typeof window.initCommunityInbox === 'function') {
     window.initCommunityInbox();
@@ -1674,6 +1676,8 @@ function switchAutoReplySubtab(subtab) {
     loadApprovalQueue();
   } else if (subtab === 'platform-settings') {
     loadPlatformSettings();
+  } else if (subtab === 'analytics' && typeof window.loadCommentAnalytics === 'function') {
+    window.loadCommentAnalytics();
   }
 }
 
