@@ -16,8 +16,13 @@ def get_db_path() -> str:
     return os.environ.get("GSP_DB_PATH") or os.path.join(os.path.dirname(__file__), "gsp.db")
 
 def get_connection():
-    conn = sqlite3.connect(get_db_path())
+    conn = sqlite3.connect(get_db_path(), timeout=15.0)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=15000;")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 def init_db():

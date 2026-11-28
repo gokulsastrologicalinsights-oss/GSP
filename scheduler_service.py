@@ -378,6 +378,7 @@ class InstagramProfessionalAdapter(PlatformAdapter):
 
         import temp_media_service
         temp_token = None
+        transcoded_tmp_path = None
         video_url = (post.get("public_media_url") or "").strip()
         if not video_url:
             base_url = (os.environ.get("GSP_PUBLIC_MEDIA_BASE_URL") or database.get_settings().get("public_media_base_url") or "").strip().rstrip("/")
@@ -390,12 +391,35 @@ class InstagramProfessionalAdapter(PlatformAdapter):
                     "permalink": None,
                     "error": "Instagram Reels requires a publicly accessible video_url via HTTPS GSP_PUBLIC_MEDIA_BASE_URL (non-localhost) or public_media_url",
                 }
+            ig_media_path = media_path
+            transcoded_tmp_path = None
+            try:
+                import subprocess
+                _tmp_dir = os.path.join(temp_media_service.MEDIA_STORAGE_ROOT, "_ig_tmp")
+                os.makedirs(_tmp_dir, exist_ok=True)
+                _tmp_ig = os.path.join(_tmp_dir, f"gsp_ig_{int(post.get('id') or 0)}.mp4")
+                _ff = subprocess.run(
+                    ["ffmpeg", "-y", "-i", media_path, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart", _tmp_ig],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=120,
+                )
+                if _ff.returncode == 0 and os.path.exists(_tmp_ig) and os.path.getsize(_tmp_ig) > 0:
+                    ig_media_path = _tmp_ig
+                    transcoded_tmp_path = _tmp_ig
+            except Exception:
+                pass
             try:
                 temp_token = temp_media_service.create_temp_media_token(
                     job_id=int(post.get("id") or 0),
-                    media_path=media_path,
+                    media_path=ig_media_path,
                 )
             except Exception as exc:
+                if transcoded_tmp_path and os.path.exists(transcoded_tmp_path):
+                    try:
+                        os.remove(transcoded_tmp_path)
+                    except OSError:
+                        pass
                 return {
                     "success": False,
                     "status": "failed",
@@ -508,6 +532,12 @@ class InstagramProfessionalAdapter(PlatformAdapter):
                 "permalink": None,
                 "error": f"Instagram upload exception: {exc}",
             }
+        finally:
+            if transcoded_tmp_path and os.path.exists(transcoded_tmp_path):
+                try:
+                    os.remove(transcoded_tmp_path)
+                except OSError:
+                    pass
 
 
 class YouTubeChannelAdapter(PlatformAdapter):

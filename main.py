@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 
 import database
+import media_server
 import scheduler_service
 import sync_service
 from facebook_service import FacebookService
@@ -22,14 +23,24 @@ from youtube_service import YouTubeService
 logger = logging.getLogger(__name__)
 
 
+def _run_ig_sync_if_enabled():
+    settings = database.get_settings()
+    if settings.get("ig_auto_reply_enabled") == "true":
+        InstagramService.sync_instagram_comments()
+
+
+def _run_yt_sync_if_enabled():
+    settings = database.get_settings()
+    if settings.get("yt_auto_reply_enabled") == "true":
+        YouTubeService.sync_youtube_comments()
+
+
 async def _instagram_background_sync_loop():
     """Periodically syncs Instagram comments when Instagram Auto Reply is enabled."""
     while True:
         await asyncio.sleep(60)
         try:
-            settings = database.get_settings()
-            if settings.get("ig_auto_reply_enabled") == "true":
-                InstagramService.sync_instagram_comments()
+            await asyncio.to_thread(_run_ig_sync_if_enabled)
         except Exception as e:
             logger.error(f"Background Instagram sync error: {e}")
 
@@ -39,9 +50,7 @@ async def _youtube_background_sync_loop():
     while True:
         await asyncio.sleep(60)
         try:
-            settings = database.get_settings()
-            if settings.get("yt_auto_reply_enabled") == "true":
-                YouTubeService.sync_youtube_comments()
+            await asyncio.to_thread(_run_yt_sync_if_enabled)
         except Exception as e:
             logger.error(f"Background YouTube sync error: {e}")
 
@@ -51,7 +60,7 @@ async def _auto_post_scheduler_loop():
     while True:
         await asyncio.sleep(30)
         try:
-            scheduler_service.run_pending_scheduled_posts()
+            await asyncio.to_thread(scheduler_service.run_pending_scheduled_posts)
         except Exception as e:
             logger.error(f"Auto Post Scheduler loop error: {e}")
 
@@ -61,7 +70,7 @@ async def _comment_sync_worker_loop():
     while True:
         await asyncio.sleep(60)
         try:
-            sync_service.run_due_syncs()
+            await asyncio.to_thread(sync_service.run_due_syncs)
         except Exception as e:
             logger.error(f"Comment sync worker error: {e}")
 
@@ -113,6 +122,12 @@ database.init_db()
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if not os.path.exists(static_dir):
     os.makedirs(static_dir, exist_ok=True)
+
+
+@app.api_route("/api/media/temp/{token}", methods=["GET", "HEAD"])
+def serve_temp_media_endpoint(token: str, request: Request):
+    """Serve temporary Instagram Reels media directly from the main app."""
+    return media_server.serve_temp_media(token, request)
 
 class SettingUpdate(BaseModel):
     key: str
