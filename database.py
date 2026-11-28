@@ -3588,3 +3588,112 @@ def process_queued_manual_replies() -> Dict[str, Any]:
     finally:
         conn.close()
     return {"processed": 1, "result": res}
+
+
+def get_comment_analytics(platform: Optional[str] = None, period: str = "day") -> Dict[str, Any]:
+    """Return comment counts (total, auto_replied, manual_replied, pending_approval, queued)
+    with day/week/month database breakdown and per-platform breakdown.
+    """
+    plat_filter = (platform or "").strip().lower()
+    if plat_filter not in ("facebook", "instagram", "youtube"):
+        plat_filter = ""
+
+    period_key = (period or "day").strip().lower()
+    if period_key == "week":
+        period_expr = "strftime('%Y-W%W', created_at)"
+    elif period_key == "month":
+        period_expr = "strftime('%Y-%m', created_at)"
+    else:
+        period_key = "day"
+        period_expr = "strftime('%Y-%m-%d', created_at)"
+
+    where_clause = "WHERE LOWER(platform) = ?" if plat_filter else ""
+    params: Tuple[Any, ...] = (plat_filter,) if plat_filter else ()
+
+    agg_sql = """
+        COUNT(*) AS total_comments,
+        SUM(CASE WHEN status = 'replied' AND (reason IS NULL OR reason NOT IN ('manual_inbox_reply', 'approved_manual_reply')) THEN 1 ELSE 0 END) AS auto_replied,
+        SUM(CASE WHEN status = 'replied' AND reason IN ('manual_inbox_reply', 'approved_manual_reply') THEN 1 ELSE 0 END) AS manual_replied,
+        SUM(CASE WHEN status = 'review_required' THEN 1 ELSE 0 END) AS pending_approval,
+        SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued_replies,
+        SUM(CASE WHEN status = 'test_prepared' THEN 1 ELSE 0 END) AS safe_test_replies
+    """
+
+    conn = get_connection()
+    try:
+        summary_row = conn.execute(
+            f"SELECT {agg_sql} FROM activities {where_clause}",
+            params,
+        ).fetchone()
+        summary = {
+            "total_comments": int((summary_row["total_comments"] if summary_row else 0) or 0),
+            "auto_replied": int((summary_row["auto_replied"] if summary_row else 0) or 0),
+            "manual_replied": int((summary_row["manual_replied"] if summary_row else 0) or 0),
+            "pending_approval": int((summary_row["pending_approval"] if summary_row else 0) or 0),
+            "queued_replies": int((summary_row["queued_replies"] if summary_row else 0) or 0),
+            "safe_test_replies": int((summary_row["safe_test_replies"] if summary_row else 0) or 0),
+        }
+
+        # Live approval_queue pending count (respecting platform filter)
+        aq_where = "WHERE status = 'pending'" + (" AND LOWER(platform) = ?" if plat_filter else "")
+        aq_row = conn.execute(f"SELECT COUNT(*) AS cnt FROM approval_queue {aq_where}", params).fetchone()
+        summary["approval_queue_pending"] = int((aq_row["cnt"] if aq_row else 0) or 0)
+
+        # Period + Platform breakdown (database table view)
+        rows = conn.execute(
+            f"""
+            SELECT
+                {period_expr} AS period_label,
+                LOWER(platform) AS platform,
+                {agg_sql}
+            FROM activities
+            {where_clause}
+            GROUP BY period_label, LOWER(platform)
+            ORDER BY period_label DESC, platform ASC
+            LIMIT 120
+            """,
+            params,
+        ).fetchall()
+        breakdown = [
+            {
+                "period": r["period_label"] or "Unknown",
+                "platform": r["platform"],
+                "total_comments": int(r["total_comments"] or 0),
+                "auto_replied": int(r["auto_replied"] or 0),
+                "manual_replied": int(r["manual_replied"] or 0),
+                "pending_approval": int(r["pending_approval"] or 0),
+                "queued_replies": int(r["queued_replies"] or 0),
+            }
+            for r in rows
+        ]
+
+        # Per-platform totals (always unfiltered across all 3 platforms for quick comparison)
+        plat_rows = conn.execute(
+            f"""
+            SELECT LOWER(platform) AS platform, {agg_sql}
+            FROM activities
+            GROUP BY LOWER(platform)
+            ORDER BY platform ASC
+            """
+        ).fetchall()
+        by_platform = [
+            {
+                "platform": r["platform"],
+                "total_comments": int(r["total_comments"] or 0),
+                "auto_replied": int(r["auto_replied"] or 0),
+                "manual_replied": int(r["manual_replied"] or 0),
+                "pending_approval": int(r["pending_approval"] or 0),
+                "queued_replies": int(r["queued_replies"] or 0),
+            }
+            for r in plat_rows
+        ]
+
+        return {
+            "platform": plat_filter or "all",
+            "period": period_key,
+            "summary": summary,
+            "by_platform": by_platform,
+            "breakdown": breakdown,
+        }
+    finally:
+        conn.close()

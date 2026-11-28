@@ -1889,6 +1889,12 @@ def send_inbox_reply_endpoint(platform: str, comment_id: str, payload: InboxRepl
     return res
 
 
+@app.get("/api/inbox/analytics")
+def get_inbox_analytics_endpoint(platform: Optional[str] = None, period: str = "day"):
+    """Return day/week/month comment analytics filtered by platform."""
+    return database.get_comment_analytics(platform=platform, period=period)
+
+
 @app.post("/api/inbox/sync")
 def sync_inbox_comments_endpoint(platform: Optional[str] = None):
     """Sync comments from connected platforms into the Community Inbox."""

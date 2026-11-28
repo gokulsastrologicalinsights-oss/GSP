@@ -271,6 +271,9 @@
           <button class="subtab-btn" data-subtab="platform-settings" role="tab" aria-selected="false">
             🔧 Platform Settings
           </button>
+          <button class="subtab-btn" data-subtab="analytics" role="tab" aria-selected="false">
+            📊 Comment Analytics
+          </button>
         </div>
 
         <!-- Primary Experience: Buffer-Style Post-Centric Community Inbox -->
@@ -551,6 +554,98 @@
             <div id="ps-panel-body">Loading platform settings...</div>
           </div>
         </div><!-- /subview-platform-settings -->
+
+        <!-- Subsection: Comment Analytics Database View -->
+        <div id="subview-analytics" class="subtab-view hidden">
+          <div class="panel" style="margin-bottom: 16px;">
+            <div class="panel-header" style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;">
+              <div>
+                <h3 style="margin:0;">📊 Comment Analytics &amp; Reply Database</h3>
+                <p style="margin:4px 0 0;font-size:12px;opacity:0.75;">Track total comments, automatic replies, manual replies, and pending approvals by day, week, or month.</p>
+              </div>
+              <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+                <select id="ca-platform-filter" class="ci-select" aria-label="Filter analytics by platform">
+                  <option value="all">All Platforms</option>
+                  <option value="facebook">Facebook</option>
+                  <option value="instagram">Instagram</option>
+                  <option value="youtube">YouTube</option>
+                </select>
+                <div class="ci-comment-filter-pills" role="group" aria-label="Period granularity">
+                  <button type="button" class="ci-chip sm active" data-ca-period="day">Day-wise</button>
+                  <button type="button" class="ci-chip sm" data-ca-period="week">Weekly</button>
+                  <button type="button" class="ci-chip sm" data-ca-period="month">Monthly</button>
+                </div>
+                <button type="button" id="ca-refresh-btn" class="secondary-btn sm">↻ Refresh</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="stats-grid" style="margin-bottom: 18px;">
+            <div class="stat-card">
+              <div class="stat-label">Total Comments</div>
+              <div class="stat-value" id="ca-total-comments">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Auto-Replied</div>
+              <div class="stat-value" id="ca-auto-replied" style="color:#10b981;">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Manual Replied</div>
+              <div class="stat-value" id="ca-manual-replied" style="color:#3b82f6;">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Pending Approval</div>
+              <div class="stat-value" id="ca-pending-approval" style="color:#f59e0b;">0</div>
+            </div>
+          </div>
+
+          <div class="panel" style="margin-bottom: 18px;">
+            <div class="panel-header">
+              <h3 style="margin:0;">Platform Summary (All Time)</h3>
+            </div>
+            <div style="overflow-x:auto;">
+              <table class="data-table" style="width:100%;border-collapse:collapse;">
+                <thead>
+                  <tr>
+                    <th>Platform</th>
+                    <th>Total Comments</th>
+                    <th>Auto-Replied</th>
+                    <th>Manual Replied</th>
+                    <th>Queued</th>
+                    <th>Pending Approval</th>
+                  </tr>
+                </thead>
+                <tbody id="ca-platform-table-body">
+                  <tr><td colspan="6" style="text-align:center;opacity:0.7;">Loading...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h3 style="margin:0;" id="ca-breakdown-title">Day-wise Comment Database</h3>
+            </div>
+            <div style="overflow-x:auto;">
+              <table class="data-table" style="width:100%;border-collapse:collapse;">
+                <thead>
+                  <tr>
+                    <th>Period</th>
+                    <th>Platform</th>
+                    <th>Total Comments</th>
+                    <th>Auto-Replied</th>
+                    <th>Manual Replied</th>
+                    <th>Queued</th>
+                    <th>Pending Approval</th>
+                  </tr>
+                </thead>
+                <tbody id="ca-breakdown-table-body">
+                  <tr><td colspan="7" style="text-align:center;opacity:0.7;">Loading...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div><!-- /subview-analytics -->
       </section>
 
       <!-- View: Activity -->

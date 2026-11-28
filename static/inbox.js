@@ -726,4 +726,95 @@ async function triggerAccountSyncNow(platform, accountId) {
 
 document.addEventListener("DOMContentLoaded", () => {
   loadAccountSyncControls();
+  initCommentAnalytics();
 });
+
+// Comment Analytics (Day / Week / Month + Platform Filter)
+const CA_STATE = { platform: "all", period: "day" };
+
+function initCommentAnalytics() {
+  const platSel = document.getElementById("ca-platform-filter");
+  const refreshBtn = document.getElementById("ca-refresh-btn");
+  const periodBtns = document.querySelectorAll("[data-ca-period]");
+  const analyticsSubtabBtn = document.querySelector('.subtab-btn[data-subtab="analytics"]');
+
+  if (platSel) {
+    platSel.addEventListener("change", () => {
+      CA_STATE.platform = platSel.value || "all";
+      loadCommentAnalytics();
+    });
+  }
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", loadCommentAnalytics);
+  }
+  periodBtns.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      periodBtns.forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      CA_STATE.period = btn.getAttribute("data-ca-period") || "day";
+      loadCommentAnalytics();
+    });
+  });
+  if (analyticsSubtabBtn) {
+    analyticsSubtabBtn.addEventListener("click", loadCommentAnalytics);
+  }
+}
+
+async function loadCommentAnalytics() {
+  const tbody = document.getElementById("ca-breakdown-table-body");
+  if (!tbody) return;
+  try {
+    const params = new URLSearchParams({ platform: CA_STATE.platform, period: CA_STATE.period });
+    const res = await fetch(`/api/inbox/analytics?${params.toString()}`);
+    if (!res.ok) throw new Error("Failed to load analytics");
+    const data = await res.json();
+    const s = data.summary || {};
+
+    const setVal = (id, val) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = String(val ?? 0);
+    };
+    setVal("ca-total-comments", s.total_comments || 0);
+    setVal("ca-auto-replied", s.auto_replied || 0);
+    setVal("ca-manual-replied", s.manual_replied || 0);
+    setVal("ca-pending-approval", s.pending_approval || 0);
+
+    const titleEl = document.getElementById("ca-breakdown-title");
+    if (titleEl) {
+      const labels = { day: "Day-wise", week: "Weekly-wise", month: "Monthly-wise" };
+      titleEl.textContent = `${labels[CA_STATE.period] || "Day-wise"} Comment Database`;
+    }
+
+    const platBody = document.getElementById("ca-platform-table-body");
+    if (platBody) {
+      const platRows = data.by_platform || [];
+      platBody.innerHTML = platRows.length
+        ? platRows.map((r) => `
+          <tr>
+            <td style="text-transform:capitalize;font-weight:600;">${r.platform}</td>
+            <td>${r.total_comments}</td>
+            <td style="color:#10b981;font-weight:600;">${r.auto_replied}</td>
+            <td style="color:#3b82f6;font-weight:600;">${r.manual_replied}</td>
+            <td>${r.queued_replies}</td>
+            <td style="color:#f59e0b;font-weight:600;">${r.pending_approval}</td>
+          </tr>`).join("")
+        : '<tr><td colspan="6" style="text-align:center;opacity:0.7;">No comments recorded yet.</td></tr>';
+    }
+
+    const rows = data.breakdown || [];
+    tbody.innerHTML = rows.length
+      ? rows.map((r) => `
+        <tr>
+          <td style="font-weight:600;">${r.period}</td>
+          <td style="text-transform:capitalize;">${r.platform}</td>
+          <td>${r.total_comments}</td>
+          <td style="color:#10b981;font-weight:600;">${r.auto_replied}</td>
+          <td style="color:#3b82f6;font-weight:600;">${r.manual_replied}</td>
+          <td>${r.queued_replies}</td>
+          <td style="color:#f59e0b;font-weight:600;">${r.pending_approval}</td>
+        </tr>`).join("")
+      : '<tr><td colspan="7" style="text-align:center;opacity:0.7;">No records found for this filter.</td></tr>';
+  } catch (err) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#ef4444;">Failed to load analytics.</td></tr>';
+  }
+}
