@@ -225,7 +225,7 @@ class FacebookService:
         comment_id = comment_data.get("id")
         post_id = comment_data.get("post_id", "")
         message = comment_data.get("message", "")
-        from_user = comment_data.get("from", {})
+        from_user = comment_data.get("from") or {}
         author_id = from_user.get("id", "")
         author_name = from_user.get("name", "Facebook User")
 
