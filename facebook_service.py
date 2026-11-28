@@ -241,7 +241,7 @@ class FacebookService:
         # Check duplicate reply prevention
         conn = database.get_connection()
         c = conn.cursor()
-        c.execute("SELECT id, status, reply_text FROM activities WHERE comment_id = ?", (comment_id,))
+        c.execute("SELECT id, status, reply_text FROM activities WHERE comment_id = ? AND status != 'skipped_rate_limit'", (comment_id,))
         existing = c.fetchone()
         if existing:
             conn.close()

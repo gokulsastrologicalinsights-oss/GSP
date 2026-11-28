@@ -499,7 +499,7 @@ class YouTubeService:
         # 2. Duplicate prevention
         conn = database.get_connection()
         c = conn.cursor()
-        c.execute("SELECT id FROM activities WHERE comment_id = ?", (comment_id,))
+        c.execute("SELECT id FROM activities WHERE comment_id = ? AND status != 'skipped_rate_limit'", (comment_id,))
         if c.fetchone():
             conn.close()
             return {"status": "skipped", "reason": "already_processed", "comment_id": comment_id}
