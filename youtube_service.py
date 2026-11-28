@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional
 import requests
 
 import database
+import nlp_detector
 from nlp_detector import analyze_comment_detailed
 
 logger = logging.getLogger(__name__)
@@ -510,7 +511,9 @@ class YouTubeService:
 
         # 3. Deterministic NLP analysis (Tamil, English, Tanglish)
         last_tpl = database.get_last_template_for_commenter(author_name)
-        lang, intent, reply_text, action_status, template_id, reason = analyze_comment_detailed(message, last_tpl)
+        lang, intent, reply_text, action_status, template_id, reason = nlp_detector.classify_for_auto_reply(
+            message, author_name=author_name, last_template_id=last_tpl
+        )
         platform_cfg = database.get_platform_hybrid_settings("youtube")
 
         final_status = "skipped"

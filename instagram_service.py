@@ -9,6 +9,7 @@ import requests
 from typing import Dict, Any, List, Optional
 
 import database
+import nlp_detector
 from facebook_service import FacebookService, GRAPH_API_VERSION, GRAPH_API_BASE
 from nlp_detector import analyze_comment_detailed
 
@@ -276,7 +277,9 @@ class InstagramService:
 
         # Deterministic language & intent analysis (reusing nlp_detector.py)
         last_tpl = database.get_last_template_for_commenter(author_name)
-        lang, intent, reply_text, action_status, template_id, reason = analyze_comment_detailed(message, last_tpl)
+        lang, intent, reply_text, action_status, template_id, reason = nlp_detector.classify_for_auto_reply(
+            message, author_name=author_name, last_template_id=last_tpl
+        )
         platform_cfg = database.get_platform_hybrid_settings("instagram")
 
         final_status = "skipped"

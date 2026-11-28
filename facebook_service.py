@@ -8,6 +8,7 @@ import requests
 import logging
 from typing import Dict, Any, List, Optional
 import database
+import nlp_detector
 from nlp_detector import analyze_comment_detailed
 
 logger = logging.getLogger(__name__)
@@ -184,7 +185,7 @@ class FacebookService:
             comments_url = f"{GRAPH_API_BASE}/{post_id}/comments"
             c_params = {
                 "access_token": access_token,
-                "fields": "id,from,message,created_time,parent",
+                "fields": "id,from,message,created_time,parent,attachment",
                 "limit": limit
             }
             c_res = requests.get(comments_url, params=c_params, timeout=10)
@@ -248,7 +249,10 @@ class FacebookService:
 
         # Language and Intent Analysis
         last_tpl = database.get_last_template_for_commenter(author_name)
-        lang, intent, reply_text, action_status, template_id, reason = analyze_comment_detailed(message, last_tpl)
+        has_sticker = bool(comment_data.get("attachment"))
+        lang, intent, reply_text, action_status, template_id, reason = nlp_detector.classify_for_auto_reply(
+            message, author_name=author_name, has_sticker=has_sticker, last_template_id=last_tpl
+        )
         platform_cfg = database.get_platform_hybrid_settings("facebook")
 
         final_status = "skipped"
